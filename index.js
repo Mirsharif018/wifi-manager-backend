@@ -23,48 +23,31 @@ app.post('/api/v1/auth/sync', (req, res) => {
   });
 });
 
-// 2. Owner Dashboard Stats
+// 2. Owner Dashboard Stats (প্রাথমিক অবস্থায় ০ দিয়ে শুরু)
 app.get('/api/v1/owner/dashboard-stats', (req, res) => {
   res.json({
     success: true,
     data: {
       business_name: "Net Point",
-      company_name: "Rahman Telecom",
-      total_customers: 256,
-      active_customers: 198,
-      due_customers: 58,
-      today_collection: 8450,
-      monthly_collection: 124500,
-      total_due: 28750,
-      notification_count: 1,
-      recent_payments: [
-        {
-          id: "PAY-101",
-          customer_name: "WIFI-001 (রহিম)",
-          phone: "01712345678",
-          trx_id: "BK8F3K2L9",
-          amount: 500,
-          time: "আজ, ১০:৩০ AM",
-          status: "Paid"
-        }
-      ],
-      notifications: [
-        {
-          id: "N-01",
-          title: "নতুন ডাটাবেজ টেস্ট",
-          message: "আপনার ব্যাকএন্ড ভার্সেল সার্ভার সফলভাবে কাজ করছে!",
-          created_at: "১০ মিনিট আগে"
-        }
-      ],
+      company_name: "Telecom",
+      total_customers: 0,
+      active_customers: 0,
+      due_customers: 0,
+      today_collection: 0,
+      monthly_collection: 0,
+      total_due: 0,
+      notification_count: 0,
+      recent_payments: [],
+      notifications: [],
       settings: {
-        business_name: "Net Point (Rahman Telecom)",
-        helpline: "01995627922",
-        bkash_number: "01712345678",
-        nagad_number: "01812345678",
+        business_name: "Net Point",
+        helpline: "",
+        bkash_number: "",
+        nagad_number: "",
         router_ip: "192.168.88.1",
         router_port: "80",
         router_username: "admin",
-        router_password: "password",
+        router_password: "",
         auto_payment: true,
         notification_enabled: true
       }
@@ -76,19 +59,7 @@ app.get('/api/v1/owner/dashboard-stats', (req, res) => {
 app.get('/api/v1/customers', (req, res) => {
   res.json({
     success: true,
-    data: [
-      {
-        id: "WIFI-001",
-        name: "রহিম উদ্দিন",
-        phone: "01712345678",
-        address: "ঢাকা, মিরপুর-১০",
-        package: "মাসিক ৫০০৳ (10 Mbps)",
-        status: "অ্যাক্টিভ",
-        expiry: "৩০ দিন বাকি",
-        mac: "CC:B8:A8:11:22:33",
-        amount: 500
-      }
-    ]
+    data: []
   });
 });
 
@@ -112,19 +83,7 @@ app.post('/api/v1/customers/:id/disconnect', (req, res) => {
 app.get('/api/v1/transactions', (req, res) => {
   res.json({
     success: true,
-    data: [
-      {
-        id: "TRX-101",
-        refer_id: "REF-10296",
-        trx_id: "BK9X1Y2Z3",
-        customer_name: "রহিম উদ্দিন",
-        phone: "01645678901",
-        amount: 500,
-        payment_method: "bKash",
-        status: "পেন্ডিং",
-        created_at: "১০ মিনিট আগে"
-      }
-    ]
+    data: []
   });
 });
 
@@ -170,22 +129,15 @@ app.get('/api/v1/reports', (req, res) => {
     success: true,
     data: {
       range: range,
-      total_income: 8450,
-      total_transactions: 17,
-      active_users: 198,
+      total_income: 0,
+      total_transactions: 0,
+      active_users: 0,
       payment_methods: {
-        bkash: 6200,
-        nagad: 1850,
-        cash: 400
+        bkash: 0,
+        nagad: 0,
+        cash: 0
       },
-      top_selling_packages: [
-        {
-          name: "মাসিক ৫০০৳ (10 Mbps)",
-          sold_count: 17,
-          total_earned: 8450,
-          percentage: "100%"
-        }
-      ]
+      top_selling_packages: []
     }
   });
 });
