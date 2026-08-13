@@ -55,7 +55,7 @@ app.get('/api/v1/owner/dashboard-stats', (req, res) => {
   });
 });
 
-// 3. Customers API (প্রাথমিক অবস্থায় খালি দিয়ে শুরু)
+// 3. Customers API
 app.get('/api/v1/customers', (req, res) => {
   res.json({
     success: true,
@@ -64,11 +64,19 @@ app.get('/api/v1/customers', (req, res) => {
 });
 
 app.post('/api/v1/customers/add', (req, res) => {
-  const { name, phone, address, package_id } = req.body;
+  const { name, phone, address, package_id, connection_fee, monthly_installment } = req.body;
   res.json({
     success: true,
-    data: { id: "WIFI-" + Date.now().toString().slice(-3), name, phone, address },
-    message: "নতুন কাস্টমার সফলভাবে সেভ করা হয়েছে!"
+    data: {
+      id: "WIFI-" + Date.now().toString().slice(-3),
+      name,
+      phone,
+      address,
+      package_id,
+      connection_fee: connection_fee || 0,
+      monthly_installment: monthly_installment || 0
+    },
+    message: "নতুন কাস্টমার ও কিস্তির হিসাব সফলভাবে সেভ করা হয়েছে!"
   });
 });
 
@@ -79,7 +87,7 @@ app.post('/api/v1/customers/:id/disconnect', (req, res) => {
   });
 });
 
-// 4. Transactions & Manual Approve (প্রাথমিক অবস্থায় খালি দিয়ে শুরু)
+// 4. Transactions & Manual Approve
 app.get('/api/v1/transactions', (req, res) => {
   res.json({
     success: true,
@@ -95,11 +103,23 @@ app.post('/api/v1/payments/manual-approve', (req, res) => {
   });
 });
 
-// 5. Packages API (প্রাথমিক অবস্থায় খালি দিয়ে শুরু)
+// 5. Packages API (ডিফল্ট ১টি একটিভ প্যাকেজ দেওয়া হলো যেন ড্রপডাউনে লাল এরর না দেখায়)
 app.get('/api/v1/packages', (req, res) => {
   res.json({
     success: true,
-    data: []
+    data: [
+      {
+        id: "PKG-MONTHLY-500",
+        name: "মাসিক ৫০০৳ (10 Mbps)",
+        price: 500,
+        durationValue: 1,
+        durationUnit: "মাস",
+        downloadSpeed: 10,
+        uploadSpeed: 5,
+        mikrotikProfile: "profile_500_10m",
+        isActive: true
+      }
+    ]
   });
 });
 
@@ -110,7 +130,7 @@ app.put('/api/v1/packages/:id/toggle', (req, res) => {
   });
 });
 
-// 6. Reports API (প্রাথমিক অবস্থায় খালি দিয়ে শুরু)
+// 6. Reports API
 app.get('/api/v1/reports', (req, res) => {
   const range = req.query.range || "today";
   res.json({
@@ -143,6 +163,19 @@ app.post('/api/v1/router/reboot', (req, res) => {
   res.json({
     success: true,
     message: "মাইক্রোটিক রাউটার রিবুট কমান্ড সফলভাবে পাঠানো হয়েছে!"
+  });
+});
+
+// 9. Installments Management API (কিস্তি হিসাব এপিআই)
+app.get('/api/v1/installments', (req, res) => {
+  res.json({
+    success: true,
+    data: {
+      total_collected: 0,
+      total_due: 0,
+      active_installment_customers: 0,
+      installments: []
+    }
   });
 });
 
