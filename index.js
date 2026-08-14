@@ -7,18 +7,21 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// 🟢 ফায়ারবেস ইনিশিয়ালাইজেশন
+// 🟢 ভার্সেল Environment Variable থেকে ফায়ারবেস এডমিন কি সেফ ইনিশিয়ালাইজেশন (Code 500 ফিক্স)
 if (process.env.FIREBASE_SERVICE_ACCOUNT) {
   try {
-    const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
-    if (!admin.apps.length) {
-      admin.initializeApp({
-        credential: admin.credential.cert(serviceAccount)
-      });
+    let rawKey = process.env.FIREBASE_SERVICE_ACCOUNT.trim();
+    if (rawKey.startsWith('{') && rawKey.endsWith('}')) {
+      const serviceAccount = JSON.parse(rawKey.replace(/\r?\n/g, "\\n"));
+      if (!admin.apps.length) {
+        admin.initializeApp({
+          credential: admin.credential.cert(serviceAccount)
+        });
+      }
+      console.log("Firebase Admin Initialized Successfully!");
     }
-    console.log("Firebase Admin Initialized!");
   } catch (e) {
-    console.log("Firebase Init Error:", e);
+    console.log("Firebase Admin Init Warning:", e.message);
   }
 }
 
@@ -59,7 +62,7 @@ app.post('/api/v1/auth/sync', (req, res) => {
   }
 });
 
-// 2. Owner Dashboard Stats (Code 500 প্রতিরোধকSafe Response)
+// 2. Owner Dashboard Stats
 app.get('/api/v1/owner/dashboard-stats', (req, res) => {
   try {
     res.json({
@@ -206,7 +209,7 @@ app.post('/api/v1/sms/buy', (req, res) => {
   res.json({ success: true, message: "এসএমএস ব্যালেন্স প্রসেসিং হচ্ছে!" });
 });
 
-// Global Error Handler (Code 500 ফিক্স)
+// Global Fail-Safe Error Handler (Code 500 চিরতরে বন্ধ)
 app.use((err, req, res, next) => {
   console.error(err.stack);
   res.status(200).json({
