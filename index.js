@@ -1,16 +1,30 @@
 const express = require('express');
 const cors = require('cors');
+const admin = require('firebase-admin');
 
 const app = express();
 
 app.use(cors());
 app.use(express.json());
 
+// 🟢 ভার্সেল Environment Variable থেকে ফায়ারবেস এডমিন কি ইনিশিয়ালাইজ করা
+if (process.env.FIREBASE_SERVICE_ACCOUNT) {
+  try {
+    const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+    admin.initializeApp({
+      credential: admin.credential.cert(serviceAccount)
+    });
+    console.log("Firebase Admin SDK Initialized Successfully!");
+  } catch (e) {
+    console.log("Firebase Admin SDK Init Error:", e);
+  }
+}
+
 // 🟢 টেস্ট রুট
 app.get('/', (req, res) => {
   res.json({
     success: true,
-    message: "Wi-Fi Manager Owner App Backend API is Running Live on Vercel!"
+    message: "Wi-Fi Manager Owner App Backend API with Cloudinary & Firebase is Running Live on Vercel!"
   });
 });
 
@@ -37,6 +51,7 @@ app.get('/api/v1/owner/dashboard-stats', (req, res) => {
       monthly_collection: 0,
       total_due: 0,
       notification_count: 0,
+      sms_balance: 250,
       recent_payments: [],
       notifications: [],
       settings: {
@@ -55,7 +70,7 @@ app.get('/api/v1/owner/dashboard-stats', (req, res) => {
   });
 });
 
-// 3. Customers API (প্রাথমিক অবস্থায় খালি দিয়ে শুরু)
+// 3. Customers API
 app.get('/api/v1/customers', (req, res) => {
   res.json({
     success: true,
@@ -64,7 +79,7 @@ app.get('/api/v1/customers', (req, res) => {
 });
 
 app.post('/api/v1/customers/add', (req, res) => {
-  const { name, phone, address, package_id, connection_fee, monthly_installment } = req.body;
+  const { name, phone, address, nid, nid_image_url, package_id, connection_fee, monthly_installment } = req.body;
   res.json({
     success: true,
     data: {
@@ -72,11 +87,13 @@ app.post('/api/v1/customers/add', (req, res) => {
       name,
       phone,
       address,
+      nid: nid || "N/A",
+      nid_image_url: nid_image_url || "", // 🟢 ক্লাউডনারির ফোটো লিংক সেভ হবে
       package_id,
       connection_fee: connection_fee || 0,
       monthly_installment: monthly_installment || 0
     },
-    message: "নতুন কাস্টমার ও কিস্তির হিসাব সফলভাবে সেভ করা হয়েছে!"
+    message: "নতুন কাস্টমার ও NID ফটো সফলভাবে সেভ করা হয়েছে!"
   });
 });
 
@@ -87,7 +104,7 @@ app.post('/api/v1/customers/:id/disconnect', (req, res) => {
   });
 });
 
-// 4. Transactions & Manual Approve (প্রাথমিক অবস্থায় খালি দিয়ে শুরু)
+// 4. Transactions & Manual Approve
 app.get('/api/v1/transactions', (req, res) => {
   res.json({
     success: true,
@@ -103,7 +120,7 @@ app.post('/api/v1/payments/manual-approve', (req, res) => {
   });
 });
 
-// 5. Packages API (🟢 মালিক নিজে নতুন প্যাকেজ তৈরি না করা পর্যন্ত সম্পূর্ণ খালি থাকবে)
+// 5. Packages API (প্রাথমিক অবস্থায় খালি দিয়ে শুরু)
 app.get('/api/v1/packages', (req, res) => {
   res.json({
     success: true,
@@ -118,7 +135,7 @@ app.put('/api/v1/packages/:id/toggle', (req, res) => {
   });
 });
 
-// 6. Reports API (প্রাথমিক অবস্থায় খালি দিয়ে শুরু)
+// 6. Reports API
 app.get('/api/v1/reports', (req, res) => {
   const range = req.query.range || "today";
   res.json({
@@ -164,6 +181,24 @@ app.get('/api/v1/installments', (req, res) => {
       active_installment_customers: 0,
       installments: []
     }
+  });
+});
+
+// 10. Group SMS API (গ্রুপ মেসেজ এপিআই)
+app.post('/api/v1/customers/send-group-sms', (req, res) => {
+  const { target_group, message } = req.body;
+  res.json({
+    success: true,
+    message: `সফলভাবে কাস্টমারদের মোবাইলে বিল তাগাদার মেসেজ পাঠানো হয়েছে!`
+  });
+});
+
+// 11. Buy SMS Package API (এসএমএস প্যাক কেনার এপিআই)
+app.post('/api/v1/sms/buy', (req, res) => {
+  const { package_id, trx_id, method } = req.body;
+  res.json({
+    success: true,
+    message: `আপনার TrxID #${trx_id} ভেরিফাই করে এসএমএস ব্যালেন্স যোগ করা হচ্ছে!`
   });
 });
 
