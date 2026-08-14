@@ -1,3 +1,4 @@
+
 const express = require('express');
 const cors = require('cors');
 const admin = require('firebase-admin');
@@ -7,24 +8,41 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// 🟢 ভার্সেল Environment Variable থেকে ফায়ারবেস এডমিন কি ইনিশিয়ালাইজ করা
+// 🟢 ফায়ারবেস ইনিশিয়ালাইজেশন
 if (process.env.FIREBASE_SERVICE_ACCOUNT) {
   try {
     const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
     admin.initializeApp({
       credential: admin.credential.cert(serviceAccount)
     });
-    console.log("Firebase Admin SDK Initialized Successfully!");
+    console.log("Firebase Admin Initialized!");
   } catch (e) {
-    console.log("Firebase Admin SDK Init Error:", e);
+    console.log("Firebase Init Error:", e);
   }
+}
+
+// 🗓️ পরবর্তী ১৫ তারিখ বের করার হেল্পার ফাংশন
+function getNext15thDate() {
+  const now = new Date();
+  let year = now.getFullYear();
+  let month = now.getMonth();
+
+  // যদি আজ মাসের ১৫ তারিখের পরে হয়, তবে আগামী মাসের ১৫ তারিখ
+  if (now.getDate() >= 15) {
+    month += 1;
+  }
+  
+  const expiryDate = new Date(year, month, 15, 23, 59, 59);
+  const monthsBn = ['জানুয়ারি', 'ফেব্রুয়ারি', 'মার্চ', 'এপ্রিল', 'মে', 'জুন', 'জুলাই', 'আগস্ট', 'সেপ্টেম্বর', 'অক্টোবর', 'নভেম্বর', 'ডিসেম্বর'];
+  
+  return `১৫ ${monthsBn[expiryDate.getMonth()]}, ${expiryDate.getFullYear()}`;
 }
 
 // 🟢 টেস্ট রুট
 app.get('/', (req, res) => {
   res.json({
     success: true,
-    message: "Wi-Fi Manager Owner App Backend API with Cloudinary & Firebase is Running Live on Vercel!"
+    message: "Wi-Fi Manager Fixed Billing (15th Cycle) Backend is Running Live!"
   });
 });
 
@@ -37,7 +55,7 @@ app.post('/api/v1/auth/sync', (req, res) => {
   });
 });
 
-// 2. Owner Dashboard Stats (প্রাথমিক অবস্থায় ০ দিয়ে শুরু)
+// 2. Owner Dashboard Stats
 app.get('/api/v1/owner/dashboard-stats', (req, res) => {
   res.json({
     success: true,
@@ -70,7 +88,7 @@ app.get('/api/v1/owner/dashboard-stats', (req, res) => {
   });
 });
 
-// 3. Customers API
+// 3. Customers API (মেয়াদ অটো ১৫ তারিখ সেট হবে)
 app.get('/api/v1/customers', (req, res) => {
   res.json({
     success: true,
@@ -80,6 +98,9 @@ app.get('/api/v1/customers', (req, res) => {
 
 app.post('/api/v1/customers/add', (req, res) => {
   const { name, phone, address, nid, nid_image_url, package_id, connection_fee, monthly_installment } = req.body;
+  
+  const expireDate = getNext15thDate(); // 🟢 অটো ১৫ তারিখ মেয়াদ সেট
+
   res.json({
     success: true,
     data: {
@@ -88,12 +109,14 @@ app.post('/api/v1/customers/add', (req, res) => {
       phone,
       address,
       nid: nid || "N/A",
-      nid_image_url: nid_image_url || "", // 🟢 ক্লাউডনারির ফোটো লিংক সেভ হবে
+      nid_image_url: nid_image_url || "",
       package_id,
       connection_fee: connection_fee || 0,
-      monthly_installment: monthly_installment || 0
+      monthly_installment: monthly_installment || 0,
+      expiry: expireDate,
+      status: "অ্যাক্টিভ"
     },
-    message: "নতুন কাস্টমার ও NID ফটো সফলভাবে সেভ করা হয়েছে!"
+    message: `নতুন কাস্টমার সেভ করা হয়েছে! মেয়াদের শেষ তারিখ: ${expireDate}`
   });
 });
 
@@ -104,7 +127,7 @@ app.post('/api/v1/customers/:id/disconnect', (req, res) => {
   });
 });
 
-// 4. Transactions & Manual Approve
+// 4. Transactions & Manual Approve (পেমেন্ট পেলেই মেয়াদ ১৫ তারিখ সেট হবে)
 app.get('/api/v1/transactions', (req, res) => {
   res.json({
     success: true,
@@ -114,13 +137,15 @@ app.get('/api/v1/transactions', (req, res) => {
 
 app.post('/api/v1/payments/manual-approve', (req, res) => {
   const { refer_id, trx_id } = req.body;
+  const newExpireDate = getNext15thDate(); // 🟢 নতুন মেয়াদ ১৫ তারিখ
+
   res.json({
     success: true,
-    message: `রেফারেন্স #${refer_id} এবং TrxID #${trx_id} ভেরিফাই হয়েছে এবং নেট চালু করা হয়েছে!`
+    message: `রেফারেন্স #${refer_id} ভেরিফাই হয়েছে! মেয়াদ ১৫ তারিখ পর্যন্ত বৃদ্ধি করা হয়েছে।`
   });
 });
 
-// 5. Packages API (প্রাথমিক অবস্থায় খালি দিয়ে শুরু)
+// 5. Packages API
 app.get('/api/v1/packages', (req, res) => {
   res.json({
     success: true,
@@ -145,11 +170,7 @@ app.get('/api/v1/reports', (req, res) => {
       total_income: 0,
       total_transactions: 0,
       active_users: 0,
-      payment_methods: {
-        bkash: 0,
-        nagad: 0,
-        cash: 0
-      },
+      payment_methods: { bkash: 0, nagad: 0, cash: 0 },
       top_selling_packages: []
     }
   });
@@ -171,7 +192,7 @@ app.post('/api/v1/router/reboot', (req, res) => {
   });
 });
 
-// 9. Installments Management API (কিস্তি হিসাব এপিআই)
+// 9. Installments Management API
 app.get('/api/v1/installments', (req, res) => {
   res.json({
     success: true,
@@ -184,18 +205,17 @@ app.get('/api/v1/installments', (req, res) => {
   });
 });
 
-// 10. Group SMS API (গ্রুপ মেসেজ এপিআই)
+// 10. Group SMS API
 app.post('/api/v1/customers/send-group-sms', (req, res) => {
-  const { target_group, message } = req.body;
   res.json({
     success: true,
-    message: `সফলভাবে কাস্টমারদের মোবাইলে বিল তাগাদার মেসেজ পাঠানো হয়েছে!`
+    message: `সফলভাবে বকেয়া কাস্টমারদের মোবাইলে ১৫ তারিখের বিল তাগাদার মেসেজ পাঠানো হয়েছে!`
   });
 });
 
-// 11. Buy SMS Package API (এসএমএস প্যাক কেনার এপিআই)
+// 11. Buy SMS Package API
 app.post('/api/v1/sms/buy', (req, res) => {
-  const { package_id, trx_id, method } = req.body;
+  const { trx_id } = req.body;
   res.json({
     success: true,
     message: `আপনার TrxID #${trx_id} ভেরিফাই করে এসএমএস ব্যালেন্স যোগ করা হচ্ছে!`
@@ -203,8 +223,6 @@ app.post('/api/v1/sms/buy', (req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-});
+app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
 
 module.exports = app;
