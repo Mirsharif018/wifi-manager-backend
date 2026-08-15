@@ -8,6 +8,22 @@ app.use(cors({ origin: true, credentials: true }));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
+// 🟢 ইন-মেমোরি ডায়নামিক ডাটা স্টোর (অ্যাপ থেকে সেভ করা তথ্য মনে রাখার জন্য)
+let settingsStore = {
+  business_name: "Net Point",
+  helpline: "",
+  bkash_number: "",
+  nagad_number: "",
+  router_ip: "",
+  router_port: "80",
+  router_username: "",
+  router_password: "",
+  auto_payment: true,
+  notification_enabled: true
+};
+
+let smsBalanceStore = 0; // 🟢 ডিফল্ট ০ এসএমএস
+
 // 🟢 ফায়ারবেস সেফ ইনিশিয়ালাইজেশন
 try {
   const admin = require('firebase-admin');
@@ -65,12 +81,12 @@ app.post('/api/v1/auth/sync', (req, res) => {
   });
 });
 
-// 2. Owner Dashboard Stats
+// 2. Owner Dashboard Stats (🟢 ডাইনামিক সেটিং সিঙ্ক সহ)
 app.get('/api/v1/owner/dashboard-stats', (req, res) => {
   res.status(200).json({
     success: true,
     data: {
-      business_name: "Net Point",
+      business_name: settingsStore.business_name || "Net Point",
       company_name: "Telecom",
       total_customers: 0,
       active_customers: 0,
@@ -80,23 +96,11 @@ app.get('/api/v1/owner/dashboard-stats', (req, res) => {
       total_due: 0,
       notification_count: 0,
       
-      // 🟢 🛠️ FIX: ২৫০ এর জায়গায় ডিফল্ট ০ করা হয়েছে
-      sms_balance: 0, 
+      sms_balance: smsBalanceStore, // 🟢 রিয়েল ডায়নামিক ব্যালেন্স
       
       recent_payments: [],
       notifications: [],
-      settings: {
-        business_name: "Net Point",
-        helpline: "01700000000",
-        bkash_number: "01700000000",
-        nagad_number: "01800000000",
-        router_ip: "192.168.88.1",
-        router_port: "80",
-        router_username: "admin",
-        router_password: "",
-        auto_payment: true,
-        notification_enabled: true
-      }
+      settings: settingsStore // 🟢 অ্যাপ থেকে সেভ করা রিয়েল সেটিংস
     }
   });
 });
@@ -120,7 +124,7 @@ app.post('/api/v1/customers/add', (req, res) => {
         address: address || "",
         nid: nid || "N/A",
         nid_image_url: nid_image_url || "",
-        package_id: package_id || "PKG-MONTHLY-500",
+        package_id: package_id || "",
         connection_fee: connection_fee || 0,
         monthly_installment: monthly_installment || 0,
         expiry: expireDate,
@@ -178,9 +182,22 @@ app.get('/api/v1/reports', (req, res) => {
   });
 });
 
-// 7. Settings Update
+// 7. Settings Update (🟢 🛠️ FIX: অ্যাপ থেকে নতুন সেটিংস সেভ করলে ডাটা স্টোরে জমা হবে)
 app.post('/api/v1/settings/update', (req, res) => {
-  res.status(200).json({ success: true, message: "সেটিংস সেভ করা হয়েছে!" });
+  const data = req.body || {};
+  
+  if (data.business_name !== undefined) settingsStore.business_name = data.business_name;
+  if (data.helpline !== undefined) settingsStore.helpline = data.helpline;
+  if (data.bkash_number !== undefined) settingsStore.bkash_number = data.bkash_number;
+  if (data.nagad_number !== undefined) settingsStore.nagad_number = data.nagad_number;
+  if (data.router_ip !== undefined) settingsStore.router_ip = data.router_ip;
+  if (data.router_port !== undefined) settingsStore.router_port = data.router_port;
+  if (data.router_username !== undefined) settingsStore.router_username = data.router_username;
+  if (data.router_password !== undefined) settingsStore.router_password = data.router_password;
+  if (data.auto_payment !== undefined) settingsStore.auto_payment = data.auto_payment;
+  if (data.notification_enabled !== undefined) settingsStore.notification_enabled = data.notification_enabled;
+
+  res.status(200).json({ success: true, message: "সেটিংস ও রাউটার ক্রেডেনশিয়াল সেভ করা হয়েছে!" });
 });
 
 // 8. Router Reboot
@@ -208,7 +225,17 @@ app.post('/api/v1/customers/send-group-sms', (req, res) => {
 
 // 11. Buy SMS Package API
 app.post('/api/v1/sms/buy', (req, res) => {
-  res.status(200).json({ success: true, message: "এসএমএস ব্যালেন্স প্রসেসিং হচ্ছে!" });
+  const { package_id } = req.body || {};
+  let count = 500;
+  if (package_id === 'SMS-1000') count = 1000;
+  if (package_id === 'SMS-5000') count = 5000;
+
+  smsBalanceStore += count; // 🟢 প্যাক কিনলে ব্যালেন্স সাথে সাথে যোগ হবে
+
+  res.status(200).json({ 
+    success: true, 
+    message: `আপনার ${count} টি এসএমএস রিচার্জ রিকোয়েস্ট গ্রহণ করা হয়েছে!` 
+  });
 });
 
 // 🟢 গ্লোবাল ৪০৪ হ্যান্ডলার
