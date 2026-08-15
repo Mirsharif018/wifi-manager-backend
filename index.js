@@ -8,7 +8,7 @@ app.use(cors({ origin: true, credentials: true }));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// 🟢 ফায়ারবেস সেফ ইনিশিয়ালাইজেশন (কোনো অবস্থাতেই যেন সার্ভার ক্র্যাশ না করে)
+// 🟢 ফায়ারবেস সেফ ইনিশিয়ালাইজেশন
 try {
   const admin = require('firebase-admin');
   if (process.env.FIREBASE_SERVICE_ACCOUNT && !admin.apps.length) {
@@ -57,7 +57,7 @@ app.get('/', (req, res) => {
 });
 
 // 1. Auth Sync
-app.all('/api/v1/auth/sync', (req, res) => {
+app.post('/api/v1/auth/sync', (req, res) => {
   res.status(200).json({
     success: true,
     data: { user_id: "OWNER-101", role: "Owner" },
@@ -65,8 +65,8 @@ app.all('/api/v1/auth/sync', (req, res) => {
   });
 });
 
-// 2. Owner Dashboard Stats (ফেল-সেফ ২০০ রেসপন্স)
-app.all('/api/v1/owner/dashboard-stats', (req, res) => {
+// 2. Owner Dashboard Stats
+app.get('/api/v1/owner/dashboard-stats', (req, res) => {
   res.status(200).json({
     success: true,
     data: {
@@ -79,14 +79,17 @@ app.all('/api/v1/owner/dashboard-stats', (req, res) => {
       monthly_collection: 0,
       total_due: 0,
       notification_count: 0,
-      sms_balance: 250,
+      
+      // 🟢 🛠️ FIX: ২৫০ এর জায়গায় ডিফল্ট ০ করা হয়েছে
+      sms_balance: 0, 
+      
       recent_payments: [],
       notifications: [],
       settings: {
         business_name: "Net Point",
-        helpline: "",
-        bkash_number: "",
-        nagad_number: "",
+        helpline: "01700000000",
+        bkash_number: "01700000000",
+        nagad_number: "01800000000",
         router_ip: "192.168.88.1",
         router_port: "80",
         router_username: "admin",
@@ -99,11 +102,11 @@ app.all('/api/v1/owner/dashboard-stats', (req, res) => {
 });
 
 // 3. Customers API
-app.all('/api/v1/customers', (req, res) => {
+app.get('/api/v1/customers', (req, res) => {
   res.status(200).json({ success: true, data: [] });
 });
 
-app.all('/api/v1/customers/add', (req, res) => {
+app.post('/api/v1/customers/add', (req, res) => {
   try {
     const { name, phone, address, nid, nid_image_url, package_id, connection_fee, monthly_installment } = req.body || {};
     const expireDate = getNext15thDate();
@@ -130,7 +133,7 @@ app.all('/api/v1/customers/add', (req, res) => {
   }
 });
 
-app.all('/api/v1/customers/:id/disconnect', (req, res) => {
+app.post('/api/v1/customers/:id/disconnect', (req, res) => {
   res.status(200).json({
     success: true,
     message: `কাস্টমার ${req.params.id} এর সংযোগ বন্ধ করা হয়েছে!`
@@ -138,11 +141,11 @@ app.all('/api/v1/customers/:id/disconnect', (req, res) => {
 });
 
 // 4. Transactions & Manual Approve
-app.all('/api/v1/transactions', (req, res) => {
+app.get('/api/v1/transactions', (req, res) => {
   res.status(200).json({ success: true, data: [] });
 });
 
-app.all('/api/v1/payments/manual-approve', (req, res) => {
+app.post('/api/v1/payments/manual-approve', (req, res) => {
   const { refer_id, trx_id } = req.body || {};
   res.status(200).json({
     success: true,
@@ -151,16 +154,16 @@ app.all('/api/v1/payments/manual-approve', (req, res) => {
 });
 
 // 5. Packages API
-app.all('/api/v1/packages', (req, res) => {
+app.get('/api/v1/packages', (req, res) => {
   res.status(200).json({ success: true, data: [] });
 });
 
-app.all('/api/v1/packages/:id/toggle', (req, res) => {
+app.put('/api/v1/packages/:id/toggle', (req, res) => {
   res.status(200).json({ success: true, message: "প্যাকেজের স্ট্যাটাস পরিবর্তন করা হয়েছে!" });
 });
 
 // 6. Reports API
-app.all('/api/v1/reports', (req, res) => {
+app.get('/api/v1/reports', (req, res) => {
   const range = req.query.range || "today";
   res.status(200).json({
     success: true,
@@ -176,17 +179,17 @@ app.all('/api/v1/reports', (req, res) => {
 });
 
 // 7. Settings Update
-app.all('/api/v1/settings/update', (req, res) => {
+app.post('/api/v1/settings/update', (req, res) => {
   res.status(200).json({ success: true, message: "সেটিংস সেভ করা হয়েছে!" });
 });
 
 // 8. Router Reboot
-app.all('/api/v1/router/reboot', (req, res) => {
+app.post('/api/v1/router/reboot', (req, res) => {
   res.status(200).json({ success: true, message: "রাউটার রিবুট কমান্ড পাঠানো হয়েছে!" });
 });
 
 // 9. Installments API
-app.all('/api/v1/installments', (req, res) => {
+app.get('/api/v1/installments', (req, res) => {
   res.status(200).json({
     success: true,
     data: {
@@ -199,28 +202,29 @@ app.all('/api/v1/installments', (req, res) => {
 });
 
 // 10. Group SMS API
-app.all('/api/v1/customers/send-group-sms', (req, res) => {
+app.post('/api/v1/customers/send-group-sms', (req, res) => {
   res.status(200).json({ success: true, message: "এসএমএস পাঠানো হয়েছে!" });
 });
 
 // 11. Buy SMS Package API
-app.all('/api/v1/sms/buy', (req, res) => {
+app.post('/api/v1/sms/buy', (req, res) => {
   res.status(200).json({ success: true, message: "এসএমএস ব্যালেন্স প্রসেসিং হচ্ছে!" });
 });
 
-// 🟢 গ্লোবাল এরর হ্যান্ডলার (Code 500 চিরতরে বন্ধ)
+// 🟢 গ্লোবাল ৪০৪ হ্যান্ডলার
 app.use((req, res) => {
-  res.status(200).json({
-    success: true,
-    message: "Wi-Fi Manager API is Active"
+  res.status(404).json({
+    success: false,
+    message: "Requested API Endpoint Not Found"
   });
 });
 
+// 🟢 গ্লোবাল এরর হ্যান্ডলার
 app.use((err, req, res, next) => {
   console.error("Global Error:", err);
-  res.status(200).json({
-    success: true,
-    message: "সার্ভার সক্রিয় আছে"
+  res.status(500).json({
+    success: false,
+    message: "সার্ভারে অনাকাঙ্ক্ষিত এরর ঘটেছে"
   });
 });
 
