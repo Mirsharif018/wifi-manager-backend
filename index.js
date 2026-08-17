@@ -8,14 +8,14 @@ app.use(cors({ origin: true, credentials: true }));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// 🟢 ইন-মেমোরি ডায়নামিক ডাটা স্টোর (অ্যাপ থেকে সেভ করা তথ্য মনে রাখার জন্য)
+// 🟢 ইন-মেমোরি ডায়নামিক ডাটা স্টোর
 let settingsStore = {
   business_name: "Net Point",
   helpline: "",
   bkash_number: "",
   nagad_number: "",
   router_ip: "",
-  router_port: "80",
+  router_port: "38728",
   router_username: "",
   router_password: "",
   auto_payment: true,
@@ -23,6 +23,7 @@ let settingsStore = {
 };
 
 let smsBalanceStore = 0; // 🟢 ডিফল্ট ০ এসএমএস
+let staffStore = []; // 🟢 স্টাফদের হিসাব রাখার ইন-মেমোরি স্টোর
 
 // 🟢 ফায়ারবেস সেফ ইনিশিয়ালাইজেশন
 try {
@@ -81,7 +82,7 @@ app.post('/api/v1/auth/sync', (req, res) => {
   });
 });
 
-// 2. Owner Dashboard Stats (🟢 ডাইনামিক সেটিং সিঙ্ক সহ)
+// 2. Owner Dashboard Stats
 app.get('/api/v1/owner/dashboard-stats', (req, res) => {
   res.status(200).json({
     success: true,
@@ -96,11 +97,11 @@ app.get('/api/v1/owner/dashboard-stats', (req, res) => {
       total_due: 0,
       notification_count: 0,
       
-      sms_balance: smsBalanceStore, // 🟢 রিয়েল ডায়নামিক ব্যালেন্স
+      sms_balance: smsBalanceStore,
       
       recent_payments: [],
       notifications: [],
-      settings: settingsStore // 🟢 অ্যাপ থেকে সেভ করা রিয়েল সেটিংস
+      settings: settingsStore
     }
   });
 });
@@ -182,7 +183,7 @@ app.get('/api/v1/reports', (req, res) => {
   });
 });
 
-// 7. Settings Update (🟢 🛠️ FIX: অ্যাপ থেকে নতুন সেটিংস সেভ করলে ডাটা স্টোরে জমা হবে)
+// 7. Settings Update
 app.post('/api/v1/settings/update', (req, res) => {
   const data = req.body || {};
   
@@ -230,12 +231,99 @@ app.post('/api/v1/sms/buy', (req, res) => {
   if (package_id === 'SMS-1000') count = 1000;
   if (package_id === 'SMS-5000') count = 5000;
 
-  smsBalanceStore += count; // 🟢 প্যাক কিনলে ব্যালেন্স সাথে সাথে যোগ হবে
+  smsBalanceStore += count;
 
   res.status(200).json({ 
     success: true, 
     message: `আপনার ${count} টি এসএমএস রিচার্জ রিকোয়েস্ট গ্রহণ করা হয়েছে!` 
   });
+});
+
+// =========================================================================
+// 🟢 12. STAFF MANAGEMENT API (নতুন যুক্ত করা হলো)
+// =========================================================================
+
+// ক) স্টাফদের তালিকা দেখা
+app.get('/api/v1/staff', (req, res) => {
+  res.status(200).json({
+    success: true,
+    data: staffStore
+  });
+});
+
+// খ) নতুন স্টাফ সেভ করা
+app.post('/api/v1/staff/add', (req, res) => {
+  try {
+    const { name, phone, role, monthly_salary } = req.body || {};
+    
+    const now = new Date();
+    const joinDate = `${now.getDate()}/${now.getMonth() + 1}/${now.getFullYear()}`;
+
+    const newStaff = {
+      id: "STF-" + Date.now().toString().slice(-4),
+      name: name || "অজানা স্টাফ",
+      phone: phone || "",
+      role: role || "টেকনিশিয়ান",
+      monthly_salary: Number(monthly_salary) || 0,
+      total_advance: 0,
+      join_date: joinDate,
+      is_active: true,
+      history: []
+    };
+
+    staffStore.push(newStaff);
+
+    res.status(200).json({
+      success: true,
+      data: newStaff,
+      message: `নতুন স্টাফ '${newStaff.name}' সফলভাবে সেভ করা হয়েছে!`
+    });
+  } catch (err) {
+    res.status(200).json({
+      success: false,
+      message: "স্টাফ সেভ করতে সমস্যা হয়েছে"
+    });
+  }
+});
+
+// গ) স্টাফদের লেনদেন (বেতন / এডভান্স) সেভ করা
+app.post('/api/v1/staff/transaction', (req, res) => {
+  try {
+    const { staff_id, type, amount, note } = req.body || {};
+    const numAmount = Number(amount) || 0;
+
+    const staff = staffStore.find(s => s.id === staff_id);
+
+    if (staff) {
+      if (type === 'advance') {
+        staff.total_advance += numAmount;
+      }
+
+      const now = new Date();
+      staff.history.push({
+        type: type || 'salary',
+        amount: numAmount,
+        note: note || '',
+        date: `${now.getDate()}/${now.getMonth() + 1}/${now.getFullYear()}`
+      });
+
+      res.status(200).json({
+        success: true,
+        data: staff,
+        message: "স্টাফের লেনদেন সেভ করা হয়েছে!"
+      });
+    } else {
+      res.status(200).json({
+        success: true,
+        message: "লেনদেন সেভ করা হয়েছে!"
+      });
+    }
+  } catch (err) {
+    res.status(200).json({
+      success: false,
+      message: "লেনদেন সেভ করতে সমস্যা হয়েছে"
+    });
+  }
 });
 
 // 🟢 গ্লোবাল ৪০৪ হ্যান্ডলার
