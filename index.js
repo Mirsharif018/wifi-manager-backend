@@ -52,6 +52,9 @@ try {
   console.log("Firebase Admin Safe Catch:", err.message);
 }
 
+// 🟢 ডায়াগনস্টিকস রাউট ইমপোর্ট
+const diagnosticsRoutes = require('./routes/diagnostics.routes');
+
 function getNext15thDate() {
   const now = new Date();
   let year = now.getFullYear();
@@ -130,9 +133,10 @@ app.get('/api/v1/customers', (req, res) => {
   res.status(200).json({ success: true, data: [] });
 });
 
-// =========================================================================
-// 🧹 3.0. DATABASE CLEANER API (ফায়ারবেস থেকে সব ডুপ্লিকেট মুছে ফেলার এপিআই)
-// =========================================================================
+// 🟢 ডায়াগনস্টিকস রাউট মাউন্ট করা হলো
+app.use('/api/v1/diagnostics', diagnosticsRoutes);
+
+// 🟢 DATABASE CLEANER API
 app.post('/api/v1/customers/clean-duplicates', async (req, res) => {
   try {
     if (!admin || !admin.apps.length) {
@@ -150,7 +154,6 @@ app.post('/api/v1/customers/clean-duplicates', async (req, res) => {
       const data = doc.data();
       const pppoe = (data.pppoe_name || data.name || '').trim().toLowerCase();
 
-      // ডুপ্লিকেট PPPoE বা র্যান্ডম টেস্ট আইডি পাওয়া গেলে মুছে ফেলা
       if (!pppoe || seenPppoe.has(pppoe) || doc.id.startsWith('WIFI-')) {
         batch.delete(doc.ref);
         deletedCount++;
@@ -172,9 +175,7 @@ app.post('/api/v1/customers/clean-duplicates', async (req, res) => {
   }
 });
 
-// =========================================================================
-// 🟢 3.1. CSV IMPORT API
-// =========================================================================
+// 🟢 CSV IMPORT API
 app.post('/api/v1/customers/import-csv', upload.single('file'), async (req, res) => {
   try {
     if (!req.file) {
@@ -196,7 +197,6 @@ app.post('/api/v1/customers/import-csv', upload.single('file'), async (req, res)
         try {
           const db = admin.firestore();
 
-          // পুরোনো ভুল ডাটা সম্পূর্ণ সাফ করা
           const existingDocs = await db.collection('customers').get();
           const deleteBatch = db.batch();
           existingDocs.forEach(doc => deleteBatch.delete(doc.ref));
