@@ -1,5 +1,8 @@
 const express = require('express');
 const cors = require('cors');
+const multer = require('multer');
+const csv = require('csv-parser');
+const stream = require('stream');
 
 const app = express();
 
@@ -7,6 +10,9 @@ const app = express();
 app.use(cors({ origin: true, credentials: true }));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+
+// 🟢 Multer ইন-মেমোরি স্টোরেজ (CSV ফাইলের জন্য)
+const upload = multer({ storage: multer.memoryStorage() });
 
 // 🟢 ইন-মেমোরি ডায়নামিক ডাটা স্টোর
 let settingsStore = {
@@ -25,9 +31,10 @@ let settingsStore = {
 let smsBalanceStore = 0; // 🟢 ডিফল্ট ০ এসএমএস
 let staffStore = []; // 🟢 স্টাফদের হিসাব রাখার ইন-মেমোরি স্টোর
 
-// 🟢 ফায়ারবেস সেফ ইনিশিয়ালাইজেশন
+// 🟢 ফায়ারবেস সেফ ইনিশিয়ালাইজেশন (গ্লোবাল স্কোপ)
+let admin;
 try {
-  const admin = require('firebase-admin');
+  admin = require('firebase-admin');
   if (process.env.FIREBASE_SERVICE_ACCOUNT && !admin.apps.length) {
     let rawData = process.env.FIREBASE_SERVICE_ACCOUNT.trim();
     let serviceAccount;
@@ -109,6 +116,134 @@ app.get('/api/v1/owner/dashboard-stats', (req, res) => {
 // 3. Customers API
 app.get('/api/v1/customers', (req, res) => {
   res.status(200).json({ success: true, data: [] });
+});
+
+// =========================================================================
+// 🟢 3.1. CSV IMPORT API (Dawan.csv ফাইল থেকে আসল কাস্টমার ডাটা ফায়ারবেসে সেভ)
+// =========================================================================
+app.post('/api/v1/customers/import-csv', upload.single('file'), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ success: false, message: 'দয়া করে একটি CSV ফাইল আপলোড করুন!' });
+    }
+
+    if (!admin || !admin.apps.length) {
+      return res.status(500).json({ success: false, message: 'ফায়ারবেস এডমিন ইনিশিয়ালাইজ করা নেই!' });
+    }
+
+    const results = [];
+    const bufferStream = new stream.PassThrough();
+    bufferStream.end(req.file.buffer);
+
+    // CSV স্ট্রিম রিড করা
+    bufferStream
+      .pipe(csv())
+      .on('data', (data) => results.push(data))
+      .on('end', async () => {
+        try {
+          const db = admin.firestore();
+          let batch = db.batch();
+          let count = 0;
+          let batchCount = 0;
+
+          for (const row of results) {
+            const pppoeName = (row.PPPoE_Name || row.name_of_user || '').trim();
+            if (!pppoeName) continue;
+
+            // ১. মোবাইল নম্বর সঠিক ফরম্যাটে কনভার্ট (যেমন: 1.72E+09 -> 01720000000)
+            let rawPhone = (row.client_phone || '').trim();
+            let formattedPhone = '';
+            if (rawPhone) {
+              let num = Number(rawPhone);
+              if (!isNaN(num) && num > 0) {
+                let strNum = Math.floor(num).toString();
+                formattedPhone = strNum.startsWith('0') ? strNum : '0' + strNum;
+              } else {
+                formattedPhone = rawPhone;
+              }
+            }
+
+            // ২. ফায়ারস্টোর ডকুমেন্ট আইডি তৈরি (অক্ষত নাম দিয়ে)
+            const safeDocId = `CUST-${pppoeName.replace(/[/\.#?\[\]]/g, '_')}`;
+            const customerRef = db.collection('customers').doc(safeDocId);
+
+            // ৩. স্ট্যাটাস বাংলা করা
+            let statusText = 'অ্যাক্টিভ';
+            if ((row.status || '').toLowerCase() === 'expired') {
+              statusText = 'মেয়াদোত্তীর্ণ';
+            }
+
+            // ৪. Dawan.csv এর প্রতিটি কলাম ফায়ারবেসের সাথে ম্যাপিং
+            const customerData = {
+              id: safeDocId,
+              refer_id: (row.customer_id || '').toString().trim(), // NetFee ID (1001, 1002...)
+              mikrotik: (row.client_mikrotik || 'maruf').trim(),
+              name: (row.name_of_user || pppoeName).trim(),
+              pppoe_name: pppoeName,
+              password: (row.password || '123456').trim(),
+              phone: formattedPhone,
+              address: (row.address_of_user || 'ঠিকানা দেওয়া নেই').trim(),
+              nid: 'N/A',
+              birth_date: 'N/A',
+              nid_image_url: '',
+              package_name: (row.bandwidth || 'মাসিক প্যাকেজ').trim(),
+              package_id: (row.bandwidth || '').trim(),
+              area: (row.area || 'maruf').trim(),
+              sub_area: (row.SubArea || 'Main').trim(),
+              email: (row.email || '').trim(),
+              billing_cycle: (row.billing_cycle || 'Monthly').trim(),
+              billing_type: 'Prepaid',
+              monthly_fee: parseFloat(row.selling_price || 0) || 500,
+              connection_fee_type: 'এককালীন',
+              connection_fee: 0,
+              monthly_installment: 0,
+              division: '',
+              district: '',
+              upazila: '',
+              ref_name: '',
+              ref_mobile: '',
+              comment: (row.comment || '').trim(),
+              status: statusText,
+              updated_at: admin.firestore.FieldValue.serverTimestamp()
+            };
+
+            batch.set(customerRef, customerData, { merge: true });
+            count++;
+            batchCount++;
+
+            // ফায়ারবেসের ব্যাচ লিমিট ৪০০ পার হলে সেভ করে নতুন ব্যাচ তৈরি
+            if (batchCount >= 400) {
+              await batch.commit();
+              batch = db.batch();
+              batchCount = 0;
+            }
+          }
+
+          if (batchCount > 0) {
+            await batch.commit();
+          }
+
+          return res.status(200).json({
+            success: true,
+            message: `সফলভাবে ${count} জন কাস্টমারের আসল ডাটা ফায়ারবেসে ইমপোর্ট করা হয়েছে! 🎉`
+          });
+
+        } catch (dbErr) {
+          console.error('Firestore Import Error:', dbErr);
+          return res.status(500).json({
+            success: false,
+            message: 'ফায়ারবেসে ডাটা সেভ করতে সমস্যা হয়েছে: ' + dbErr.message
+          });
+        }
+      });
+
+  } catch (err) {
+    console.error('CSV Route Error:', err);
+    return res.status(500).json({
+      success: false,
+      message: 'সার্ভার এরর: ' + err.message
+    });
+  }
 });
 
 app.post('/api/v1/customers/add', (req, res) => {
@@ -240,7 +375,7 @@ app.post('/api/v1/sms/buy', (req, res) => {
 });
 
 // =========================================================================
-// 🟢 12. STAFF MANAGEMENT API (নতুন যুক্ত করা হলো)
+// 🟢 12. STAFF MANAGEMENT API
 // =========================================================================
 
 // ক) স্টাফদের তালিকা দেখা
