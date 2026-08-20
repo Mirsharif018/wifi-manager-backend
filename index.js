@@ -28,8 +28,8 @@ let settingsStore = {
   notification_enabled: true
 };
 
-let smsBalanceStore = 0; // 🟢 ডিফল্ট ০ এসএমএস
-let staffStore = []; // 🟢 স্টাফদের হিসাব রাখার ইন-মেমোরি স্টোর
+let smsBalanceStore = 0;
+let staffStore = [];
 
 // 🟢 ফায়ারবেস সেফ ইনিশিয়ালাইজেশন (গ্লোবাল স্কোপ)
 let admin;
@@ -70,6 +70,21 @@ function getNext15thDate() {
   const monthsBn = ['জানুয়ারি', 'ফেব্রুয়ারি', 'মার্চ', 'এপ্রিল', 'মে', 'জুন', 'জুলাই', 'আগস্ট', 'সেপ্টেম্বর', 'অক্টোবর', 'নভেম্বর', 'ডিসেম্বর'];
   
   return `১৫ ${monthsBn[expiryDate.getMonth()]}, ${expiryDate.getFullYear()}`;
+}
+
+// 🟢 স্মার্ট হেডার রিডার (অদৃশ্য BOM বা হিডেন ক্যারেক্টার থাকলেও সঠিক ভ্যালু খুঁজে বের করবে)
+function getCsvVal(row, possibleKeys) {
+  if (!row) return '';
+  const rowKeys = Object.keys(row);
+  for (const rawKey of rowKeys) {
+    const cleanKey = rawKey.replace(/^\ufeff/, '').trim().toLowerCase();
+    for (const targetKey of possibleKeys) {
+      if (cleanKey === targetKey.toLowerCase()) {
+        return (row[rawKey] || '').toString().trim();
+      }
+    }
+  }
+  return '';
 }
 
 // 🟢 হোম টেস্ট রুট
@@ -119,7 +134,7 @@ app.get('/api/v1/customers', (req, res) => {
 });
 
 // =========================================================================
-// 🟢 3.1. CSV IMPORT API (Dawan.csv ফাইল থেকে আসল কাস্টমার ডাটা ফায়ারবেসে সেভ)
+// 🟢 3.1. CSV IMPORT API (স্মার্ট কলাম ম্যাচিং সহ)
 // =========================================================================
 app.post('/api/v1/customers/import-csv', upload.single('file'), async (req, res) => {
   try {
@@ -135,7 +150,6 @@ app.post('/api/v1/customers/import-csv', upload.single('file'), async (req, res)
     const bufferStream = new stream.PassThrough();
     bufferStream.end(req.file.buffer);
 
-    // CSV স্ট্রিম রিড করা
     bufferStream
       .pipe(csv())
       .on('data', (data) => results.push(data))
@@ -147,11 +161,23 @@ app.post('/api/v1/customers/import-csv', upload.single('file'), async (req, res)
           let batchCount = 0;
 
           for (const row of results) {
-            const pppoeName = (row.PPPoE_Name || row.name_of_user || '').trim();
+            // স্মার্ট হেডার ফিল্টারিং
+            const pppoeName = getCsvVal(row, ['PPPoE_Name', 'pppoe_name', 'name_of_user', 'username']);
             if (!pppoeName) continue;
 
-            // ১. মোবাইল নম্বর সঠিক ফরম্যাটে কনভার্ট (যেমন: 1.72E+09 -> 01720000000)
-            let rawPhone = (row.client_phone || '').trim();
+            const customerId = getCsvVal(row, ['customer_id', 'id', 'customer', 'refer_id']);
+            const nameOfUser = getCsvVal(row, ['name_of_user', 'name', 'customer_name']) || pppoeName;
+            const passwordVal = getCsvVal(row, ['password', 'pppoe_password']) || '123456';
+            const addressVal = getCsvVal(row, ['address_of_user', 'address']) || 'ঠিকানা দেওয়া নেই';
+            const bandwidthVal = getCsvVal(row, ['bandwidth', 'package', 'package_name']) || 'মাসিক প্যাকেজ';
+            const priceVal = parseFloat(getCsvVal(row, ['selling_price', 'price', 'monthly_fee'])) || 500;
+            const areaVal = getCsvVal(row, ['area']) || 'Main Area';
+            const subAreaVal = getCsvVal(row, ['SubArea', 'sub_area']) || 'Sub Area';
+            const commentVal = getCsvVal(row, ['comment']);
+            const statusRaw = getCsvVal(row, ['status']).toLowerCase();
+
+            // ১. মোবাইল নম্বর সঠিক ফরম্যাটে আনা
+            let rawPhone = getCsvVal(row, ['client_phone', 'phone', 'mobile']);
             let formattedPhone = '';
             if (rawPhone) {
               let num = Number(rawPhone);
@@ -163,37 +189,37 @@ app.post('/api/v1/customers/import-csv', upload.single('file'), async (req, res)
               }
             }
 
-            // ২. ফায়ারস্টোর ডকুমেন্ট আইডি তৈরি (অক্ষত নাম দিয়ে)
+            // ২. নিরাপদ ফায়ারস্টোর ডকুমেন্ট আইডি
             const safeDocId = `CUST-${pppoeName.replace(/[/\.#?\[\]]/g, '_')}`;
             const customerRef = db.collection('customers').doc(safeDocId);
 
-            // ৩. স্ট্যাটাস বাংলা করা
+            // ৩. স্ট্যাটাস বাংলা
             let statusText = 'অ্যাক্টিভ';
-            if ((row.status || '').toLowerCase() === 'expired') {
+            if (statusRaw === 'expired' || statusRaw === 'unpaid') {
               statusText = 'মেয়াদোত্তীর্ণ';
             }
 
-            // ৪. Dawan.csv এর প্রতিটি কলাম ফায়ারবেসের সাথে ম্যাপিং
+            // ৪. ফায়ারবেসে নিখুঁত কাস্টমার অবজেক্ট তৈরি
             const customerData = {
               id: safeDocId,
-              refer_id: (row.customer_id || '').toString().trim(), // NetFee ID (1001, 1002...)
-              mikrotik: (row.client_mikrotik || 'maruf').trim(),
-              name: (row.name_of_user || pppoeName).trim(),
+              refer_id: customerId || pppoeName, // 🟢 আসল আইডি (1001, 1279 ইত্যাদি)
+              mikrotik: getCsvVal(row, ['client_mikrotik', 'mikrotik']) || 'Anik-ACCESS',
+              name: nameOfUser,
               pppoe_name: pppoeName,
-              password: (row.password || '123456').trim(),
+              password: passwordVal,
               phone: formattedPhone,
-              address: (row.address_of_user || 'ঠিকানা দেওয়া নেই').trim(),
+              address: addressVal,
               nid: 'N/A',
               birth_date: 'N/A',
               nid_image_url: '',
-              package_name: (row.bandwidth || 'মাসিক প্যাকেজ').trim(),
-              package_id: (row.bandwidth || '').trim(),
-              area: (row.area || 'maruf').trim(),
-              sub_area: (row.SubArea || 'Main').trim(),
-              email: (row.email || '').trim(),
-              billing_cycle: (row.billing_cycle || 'Monthly').trim(),
+              package_name: bandwidthVal,
+              package_id: bandwidthVal,
+              area: areaVal,
+              sub_area: subAreaVal,
+              email: getCsvVal(row, ['email']),
+              billing_cycle: getCsvVal(row, ['billing_cycle']) || 'Monthly',
               billing_type: 'Prepaid',
-              monthly_fee: parseFloat(row.selling_price || 0) || 500,
+              monthly_fee: priceVal,
               connection_fee_type: 'এককালীন',
               connection_fee: 0,
               monthly_installment: 0,
@@ -202,7 +228,7 @@ app.post('/api/v1/customers/import-csv', upload.single('file'), async (req, res)
               upazila: '',
               ref_name: '',
               ref_mobile: '',
-              comment: (row.comment || '').trim(),
+              comment: commentVal,
               status: statusText,
               updated_at: admin.firestore.FieldValue.serverTimestamp()
             };
@@ -211,7 +237,6 @@ app.post('/api/v1/customers/import-csv', upload.single('file'), async (req, res)
             count++;
             batchCount++;
 
-            // ফায়ারবেসের ব্যাচ লিমিট ৪০০ পার হলে সেভ করে নতুন ব্যাচ তৈরি
             if (batchCount >= 400) {
               await batch.commit();
               batch = db.batch();
@@ -225,14 +250,14 @@ app.post('/api/v1/customers/import-csv', upload.single('file'), async (req, res)
 
           return res.status(200).json({
             success: true,
-            message: `সফলভাবে ${count} জন কাস্টমারের আসল ডাটা ফায়ারবেসে ইমপোর্ট করা হয়েছে! 🎉`
+            message: `সফলভাবে ${count} জন কাস্টমারের আসল ডাটা ও রেফার আইডি সেভ হয়েছে! 🎉`
           });
 
         } catch (dbErr) {
           console.error('Firestore Import Error:', dbErr);
           return res.status(500).json({
             success: false,
-            message: 'ফায়ারবেসে ডাটা সেভ করতে সমস্যা হয়েছে: ' + dbErr.message
+            message: 'ফায়ারবেস এরর: ' + dbErr.message
           });
         }
       });
@@ -374,23 +399,14 @@ app.post('/api/v1/sms/buy', (req, res) => {
   });
 });
 
-// =========================================================================
-// 🟢 12. STAFF MANAGEMENT API
-// =========================================================================
-
-// ক) স্টাফদের তালিকা দেখা
+// 12. STAFF MANAGEMENT API
 app.get('/api/v1/staff', (req, res) => {
-  res.status(200).json({
-    success: true,
-    data: staffStore
-  });
+  res.status(200).json({ success: true, data: staffStore });
 });
 
-// খ) নতুন স্টাফ সেভ করা
 app.post('/api/v1/staff/add', (req, res) => {
   try {
     const { name, phone, role, monthly_salary } = req.body || {};
-    
     const now = new Date();
     const joinDate = `${now.getDate()}/${now.getMonth() + 1}/${now.getFullYear()}`;
 
@@ -414,19 +430,14 @@ app.post('/api/v1/staff/add', (req, res) => {
       message: `নতুন স্টাফ '${newStaff.name}' সফলভাবে সেভ করা হয়েছে!`
     });
   } catch (err) {
-    res.status(200).json({
-      success: false,
-      message: "স্টাফ সেভ করতে সমস্যা হয়েছে"
-    });
+    res.status(200).json({ success: false, message: "স্টাফ সেভ করতে সমস্যা হয়েছে" });
   }
 });
 
-// গ) স্টাফদের লেনদেন (বেতন / এডভান্স) সেভ করা
 app.post('/api/v1/staff/transaction', (req, res) => {
   try {
     const { staff_id, type, amount, note } = req.body || {};
     const numAmount = Number(amount) || 0;
-
     const staff = staffStore.find(s => s.id === staff_id);
 
     if (staff) {
@@ -442,40 +453,22 @@ app.post('/api/v1/staff/transaction', (req, res) => {
         date: `${now.getDate()}/${now.getMonth() + 1}/${now.getFullYear()}`
       });
 
-      res.status(200).json({
-        success: true,
-        data: staff,
-        message: "স্টাফের লেনদেন সেভ করা হয়েছে!"
-      });
+      res.status(200).json({ success: true, data: staff, message: "স্টাফের লেনদেন সেভ করা হয়েছে!" });
     } else {
-      res.status(200).json({
-        success: true,
-        message: "লেনদেন সেভ করা হয়েছে!"
-      });
+      res.status(200).json({ success: true, message: "লেনদেন সেভ করা হয়েছে!" });
     }
   } catch (err) {
-    res.status(200).json({
-      success: false,
-      message: "লেনদেন সেভ করতে সমস্যা হয়েছে"
-    });
+    res.status(200).json({ success: false, message: "লেনদেন সেভ করতে সমস্যা হয়েছে" });
   }
 });
 
-// 🟢 গ্লোবাল ৪০৪ হ্যান্ডলার
 app.use((req, res) => {
-  res.status(404).json({
-    success: false,
-    message: "Requested API Endpoint Not Found"
-  });
+  res.status(404).json({ success: false, message: "Requested API Endpoint Not Found" });
 });
 
-// 🟢 গ্লোবাল এরর হ্যান্ডলার
 app.use((err, req, res, next) => {
   console.error("Global Error:", err);
-  res.status(500).json({
-    success: false,
-    message: "সার্ভারে অনাকাঙ্ক্ষিত এরর ঘটেছে"
-  });
+  res.status(500).json({ success: false, message: "সার্ভারে অনাকাঙ্ক্ষিত এরর ঘটেছে" });
 });
 
 const PORT = process.env.PORT || 3000;
