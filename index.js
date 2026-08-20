@@ -31,7 +31,7 @@ let settingsStore = {
 let smsBalanceStore = 0;
 let staffStore = [];
 
-// 🟢 ফায়ারবেস সেফ ইনিশিয়ালাইজেশন (গ্লোবাল স্কোপ)
+// 🟢 ফায়ারবেস সেফ ইনিশিয়ালাইজেশন
 let admin;
 try {
   admin = require('firebase-admin');
@@ -72,18 +72,29 @@ function getNext15thDate() {
   return `১৫ ${monthsBn[expiryDate.getMonth()]}, ${expiryDate.getFullYear()}`;
 }
 
-// 🟢 স্মার্ট হেডার রিডার (অদৃশ্য BOM বা হিডেন ক্যারেক্টার থাকলেও সঠিক ভ্যালু খুঁজে বের করবে)
-function getCsvVal(row, possibleKeys) {
+// 🟢 আল্ট্রা-স্মার্ট হেডার ও পজিশনাল পার্সার (কলাম নাম কাটা থাকলেও ১ম পজিশন থেকে আসল আইডি বের করবে)
+function getCsvVal(row, possibleKeys, defaultIndex = -1) {
   if (!row) return '';
   const rowKeys = Object.keys(row);
+  const rowValues = Object.values(row);
+
+  // ১. নাম বা আংশিক নাম মিলিয়ে ডাটা খোঁজা
   for (const rawKey of rowKeys) {
     const cleanKey = rawKey.replace(/^\ufeff/, '').trim().toLowerCase();
     for (const targetKey of possibleKeys) {
-      if (cleanKey === targetKey.toLowerCase()) {
-        return (row[rawKey] || '').toString().trim();
+      const tKey = targetKey.toLowerCase();
+      if (cleanKey === tKey || cleanKey.startsWith(tKey) || tKey.startsWith(cleanKey)) {
+        const val = (row[rawKey] || '').toString().trim();
+        if (val) return val;
       }
     }
   }
+
+  // ২. কলামের নাম না মিললে ইনডেক্স/পজিশন থেকে ডাটা নেওয়া
+  if (defaultIndex >= 0 && defaultIndex < rowValues.length) {
+    return (rowValues[defaultIndex] || '').toString().trim();
+  }
+
   return '';
 }
 
@@ -134,7 +145,7 @@ app.get('/api/v1/customers', (req, res) => {
 });
 
 // =========================================================================
-// 🟢 3.1. CSV IMPORT API (স্মার্ট কলাম ম্যাচিং সহ)
+// 🟢 3.1. CSV IMPORT API (স্মার্ট পজিশনাল আইডি এক্সট্র্যাক্টর)
 // =========================================================================
 app.post('/api/v1/customers/import-csv', upload.single('file'), async (req, res) => {
   try {
@@ -161,23 +172,25 @@ app.post('/api/v1/customers/import-csv', upload.single('file'), async (req, res)
           let batchCount = 0;
 
           for (const row of results) {
-            // স্মার্ট হেডার ফিল্টারিং
-            const pppoeName = getCsvVal(row, ['PPPoE_Name', 'pppoe_name', 'name_of_user', 'username']);
+            // ১. কাস্টমার আইডি নেওয়া (১ম কলাম বা customer_id)
+            const customerId = getCsvVal(row, ['customer', 'id', 'refer'], 0);
+            
+            // ২. PPPoE নাম নেওয়া (৩য় কলাম বা PPPoE_Name)
+            const pppoeName = getCsvVal(row, ['pppoe', 'username'], 2) || getCsvVal(row, ['name_of', 'name'], 1);
             if (!pppoeName) continue;
 
-            const customerId = getCsvVal(row, ['customer_id', 'id', 'customer', 'refer_id']);
-            const nameOfUser = getCsvVal(row, ['name_of_user', 'name', 'customer_name']) || pppoeName;
-            const passwordVal = getCsvVal(row, ['password', 'pppoe_password']) || '123456';
-            const addressVal = getCsvVal(row, ['address_of_user', 'address']) || 'ঠিকানা দেওয়া নেই';
-            const bandwidthVal = getCsvVal(row, ['bandwidth', 'package', 'package_name']) || 'মাসিক প্যাকেজ';
-            const priceVal = parseFloat(getCsvVal(row, ['selling_price', 'price', 'monthly_fee'])) || 500;
-            const areaVal = getCsvVal(row, ['area']) || 'Main Area';
-            const subAreaVal = getCsvVal(row, ['SubArea', 'sub_area']) || 'Sub Area';
-            const commentVal = getCsvVal(row, ['comment']);
-            const statusRaw = getCsvVal(row, ['status']).toLowerCase();
+            const nameOfUser = getCsvVal(row, ['name_of', 'name'], 1) || pppoeName;
+            const addressVal = getCsvVal(row, ['address_of', 'address'], 3) || 'ঠিকানা দেওয়া নেই';
+            const bandwidthVal = getCsvVal(row, ['bandwidth', 'package'], 6) || 'মাসিক প্যাকেজ';
+            const passwordVal = getCsvVal(row, ['password'], 7) || '123456';
+            const priceVal = parseFloat(getCsvVal(row, ['selling', 'price', 'fee'], 17)) || 500;
+            const areaVal = getCsvVal(row, ['area'], 12) || 'Main Area';
+            const subAreaVal = getCsvVal(row, ['subarea', 'sub_area'], 11) || 'Sub Area';
+            const commentVal = getCsvVal(row, ['comment'], 18);
+            const statusRaw = getCsvVal(row, ['status'], 9).toLowerCase();
 
-            // ১. মোবাইল নম্বর সঠিক ফরম্যাটে আনা
-            let rawPhone = getCsvVal(row, ['client_phone', 'phone', 'mobile']);
+            // ৩. মোবাইল নম্বর সঠিকভাবে ফরম্যাট করা
+            let rawPhone = getCsvVal(row, ['client_pho', 'phone', 'mobile'], 8);
             let formattedPhone = '';
             if (rawPhone) {
               let num = Number(rawPhone);
@@ -189,21 +202,21 @@ app.post('/api/v1/customers/import-csv', upload.single('file'), async (req, res)
               }
             }
 
-            // ২. নিরাপদ ফায়ারস্টোর ডকুমেন্ট আইডি
+            // ৪. ফায়ারস্টোর ডকুমেন্ট আইডি
             const safeDocId = `CUST-${pppoeName.replace(/[/\.#?\[\]]/g, '_')}`;
             const customerRef = db.collection('customers').doc(safeDocId);
 
-            // ৩. স্ট্যাটাস বাংলা
+            // ৫. স্ট্যাটাস বাংলা করা
             let statusText = 'অ্যাক্টিভ';
             if (statusRaw === 'expired' || statusRaw === 'unpaid') {
               statusText = 'মেয়াদোত্তীর্ণ';
             }
 
-            // ৪. ফায়ারবেসে নিখুঁত কাস্টমার অবজেক্ট তৈরি
+            // ৬. ফায়ারবেসে সম্পূর্ণ নিখুঁত ডাটা সেভ
             const customerData = {
               id: safeDocId,
-              refer_id: customerId || pppoeName, // 🟢 আসল আইডি (1001, 1279 ইত্যাদি)
-              mikrotik: getCsvVal(row, ['client_mikrotik', 'mikrotik']) || 'Anik-ACCESS',
+              refer_id: customerId, // 🟢 এটি এখন সরাসরি ১ম কলাম থেকে আসল আইডি (1001, 1012, 1279) নেবে
+              mikrotik: getCsvVal(row, ['client1_mik', 'client_mikrotik', 'mikrotik'], 5) || 'Anik-ACCESS',
               name: nameOfUser,
               pppoe_name: pppoeName,
               password: passwordVal,
@@ -216,8 +229,8 @@ app.post('/api/v1/customers/import-csv', upload.single('file'), async (req, res)
               package_id: bandwidthVal,
               area: areaVal,
               sub_area: subAreaVal,
-              email: getCsvVal(row, ['email']),
-              billing_cycle: getCsvVal(row, ['billing_cycle']) || 'Monthly',
+              email: getCsvVal(row, ['email'], 13),
+              billing_cycle: getCsvVal(row, ['billing_cyc', 'billing_cycle'], 15) || 'Monthly',
               billing_type: 'Prepaid',
               monthly_fee: priceVal,
               connection_fee_type: 'এককালীন',
@@ -250,7 +263,7 @@ app.post('/api/v1/customers/import-csv', upload.single('file'), async (req, res)
 
           return res.status(200).json({
             success: true,
-            message: `সফলভাবে ${count} জন কাস্টমারের আসল ডাটা ও রেফার আইডি সেভ হয়েছে! 🎉`
+            message: `সফলভাবে ${count} জন কাস্টমারের আসল রেফার নম্বর (1001, 1279...) সহ ডাটা ফায়ারবেসে সেভ হয়েছে! 🎉`
           });
 
         } catch (dbErr) {
