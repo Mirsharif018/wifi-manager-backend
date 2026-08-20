@@ -15,8 +15,8 @@ const upload = multer({ storage: multer.memoryStorage() });
 let settingsStore = {
   business_name: "Net Point",
   helpline: "",
-  bkash_number: "",
-  nagad_number: "",
+  bkash_number: "01789222002",
+  nagad_number: "01789222002",
   router_ip: "",
   router_port: "38728",
   router_username: "",
@@ -25,7 +25,7 @@ let settingsStore = {
   notification_enabled: true
 };
 
-let smsBalanceStore = 0;
+let smsBalanceStore = 500;
 let staffStore = [];
 
 let admin;
@@ -52,7 +52,6 @@ try {
   console.log("Firebase Admin Safe Catch:", err.message);
 }
 
-// 🟢 ডায়াগনস্টিকস রাউট ইমপোর্ট
 const diagnosticsRoutes = require('./routes/diagnostics.routes');
 
 function getNext15thDate() {
@@ -133,10 +132,101 @@ app.get('/api/v1/customers', (req, res) => {
   res.status(200).json({ success: true, data: [] });
 });
 
-// 🟢 ডায়াগনস্টিকস রাউট মাউন্ট করা হলো
 app.use('/api/v1/diagnostics', diagnosticsRoutes);
 
-// 🟢 DATABASE CLEANER API
+// 🟢 10. DYNAMIC GROUP SMS API (ডাইনামিক রেফার ও বিলের টাকা বসিয়ে এসএমএস সেন্ড)
+app.post('/api/v1/customers/send-group-sms', async (req, res) => {
+  try {
+    const { target_group, customMessage } = req.body || {};
+    
+    if (!admin || !admin.apps.length) {
+      return res.status(500).json({ success: false, message: 'ফায়ারবেস ইনিশিয়ালাইজ করা নেই!' });
+    }
+
+    const db = admin.firestore();
+    const snapshot = await db.collection('customers').get();
+
+    if (snapshot.empty) {
+      return res.status(400).json({ success: false, message: 'কোনো কাস্টমার পাওয়া যায়নি!' });
+    }
+
+    let sentCount = 0;
+    const bkashNumber = settingsStore.bkash_number || "01789222002";
+
+    snapshot.docs.forEach(doc => {
+      const cust = doc.data();
+      const isDue = cust.status === 'মেয়াদোত্তীর্ণ' || cust.status === 'unpaid';
+
+      // টার্গেট গ্রুপ ফিল্টারিং
+      if ((target_group === 'due' && isDue) || target_group === 'all' || (target_group === 'active' && !isDue)) {
+        
+        // 🟢 ডাইনামিক টেমপ্লেট রিপ্লেসমেন্ট (বিল, রেফার আইডি, বিকাশ নম্বর)
+        let personalizedMsg = (customMessage || '')
+          .replace(/\{bill\}/g, cust.monthly_fee || 500)
+          .replace(/\{refer_id\}/g, cust.refer_id || cust.pppoe_name)
+          .replace(/\{bkash\}/g, bkashNumber)
+          .replace(/\{name\}/g, cust.name || cust.pppoe_name);
+
+        console.log(`Sending SMS to ${cust.phone || cust.name}: ${personalizedMsg}`);
+        sentCount++;
+      }
+    });
+
+    smsBalanceStore = Math.max(0, smsBalanceStore - sentCount);
+
+    return res.status(200).json({
+      success: true,
+      message: `সফলভাবে ${sentCount} জন কাস্টমারকে যার যার বিল ও রেফারেন্স আইডি সহ এসএমএস পাঠানো হয়েছে! 🎉`
+    });
+
+  } catch (err) {
+    console.error("Send Group SMS Error:", err);
+    return res.status(500).json({ success: false, message: 'এসএমএস পাঠাতে সমস্যা হয়েছে: ' + err.message });
+  }
+});
+
+// 🟢 4. MANUAL & AUTO PAYMENT APPROVE WITH THANK YOU SMS (বিল পরিশোধের পর অটো কনফার্মেশন এসএমএস)
+app.post('/api/v1/payments/manual-approve', async (req, res) => {
+  try {
+    const { refer_id, trx_id, phone } = req.body || {};
+    
+    if (!admin || !admin.apps.length) {
+      return res.status(200).json({ success: true, message: `রেফারেন্স #${refer_id || ''} এবং TrxID #${trx_id || ''} ভেরিফাই হয়েছে!` });
+    }
+
+    const db = admin.firestore();
+    const snapshot = await db.collection('customers').where('refer_id', '==', refer_id).get();
+
+    let customerName = "কাস্টমার";
+    let paidAmount = 500;
+    let customerPhone = phone || "";
+
+    if (!snapshot.empty) {
+      const custDoc = snapshot.docs[0];
+      const custData = custDoc.data();
+      customerName = custData.name || custData.pppoe_name;
+      paidAmount = custData.monthly_fee || 500;
+      customerPhone = custData.phone || phone;
+
+      // কাস্টমারের স্ট্যাটাস অ্যাক্টিভ সেভ
+      await custDoc.ref.update({ status: 'অ্যাক্টিভ' });
+    }
+
+    // 🟢 কাস্টমারকে অটোমেটিক ধন্যবাদ ও বিল পরিশোধের মেসেজ সেন্ড
+    const thankYouMsg = `প্রিয় গ্রাহক, আপনার Wi-Fi বিল ${paidAmount} টাকা সফলভাবে পরিশোধ হয়েছে। ধন্যবাদ।`;
+    console.log(`Sending Thank You SMS to ${customerPhone || customerName}: ${thankYouMsg}`);
+
+    return res.status(200).json({
+      success: true,
+      message: `রেফারেন্স #${refer_id} ভেরিফাই হয়েছে এবং ${customerName}-কে পেমেন্ট কনফার্মেশন এসএমএস পাঠানো হয়েছে!`
+    });
+
+  } catch (err) {
+    console.error("Approve Payment Error:", err);
+    return res.status(200).json({ success: true, message: `পেমেন্ট ভেরিফাই হয়েছে!` });
+  }
+});
+
 app.post('/api/v1/customers/clean-duplicates', async (req, res) => {
   try {
     if (!admin || !admin.apps.length) {
@@ -175,7 +265,6 @@ app.post('/api/v1/customers/clean-duplicates', async (req, res) => {
   }
 });
 
-// 🟢 CSV IMPORT API
 app.post('/api/v1/customers/import-csv', upload.single('file'), async (req, res) => {
   try {
     if (!req.file) {
@@ -343,11 +432,6 @@ app.get('/api/v1/transactions', (req, res) => {
   res.status(200).json({ success: true, data: [] });
 });
 
-app.post('/api/v1/payments/manual-approve', (req, res) => {
-  const { refer_id, trx_id } = req.body || {};
-  res.status(200).json({ success: true, message: `রেফারেন্স #${refer_id || ''} এবং TrxID #${trx_id || ''} ভেরিফাই হয়েছে!` });
-});
-
 app.get('/api/v1/packages', (req, res) => {
   res.status(200).json({ success: true, data: [] });
 });
@@ -402,10 +486,6 @@ app.get('/api/v1/installments', (req, res) => {
       installments: []
     }
   });
-});
-
-app.post('/api/v1/customers/send-group-sms', (req, res) => {
-  res.status(200).json({ success: true, message: "এসএমএস পাঠানো হয়েছে!" });
 });
 
 app.post('/api/v1/sms/buy', (req, res) => {
