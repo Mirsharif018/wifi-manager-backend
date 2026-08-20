@@ -1,19 +1,19 @@
 // File Path: services/fault_detector.service.js
 const admin = require('firebase-admin');
 
-let activeFaultsList = []; // বর্তমান নেটওয়ার্ক ফল্ট স্টোর
+let activeFaultsList = [];
+const lastAlertTimeMap = new Map(); // এরিয়া অনুযায়ী নোটিফিকেশন কুলডাউন সময়
 
-// 🟢 সমস্যা সনাক্তকরণ লজিক (ONU vs Fiber Cut vs Router Down)
 async function runNetworkDiagnostics() {
   try {
-    if (!admin || !admin.apps.length) return;
+    if (!admin || !admin.apps.length) return [];
     const db = admin.firestore();
 
     const snapshot = await db.collection('customers').get();
-    if (snapshot.empty) return;
+    if (snapshot.empty) return [];
 
     const currentCustomers = [];
-    const areaDisconnectedMap = {};
+    const areaDisconnectedMap = {}; // এলাকা অনুযায়ী অফলাইন কাস্টমার সংখ্যা
 
     snapshot.docs.forEach(doc => {
       currentCustomers.push(doc.data());
@@ -37,26 +37,27 @@ async function runNetworkDiagnostics() {
     });
 
     const newFaults = [];
+    const nowTime = Date.now();
 
-    // 🟢 ফল্ট ক্লাসিফিকেশন লজিক
+    // 🟢 স্মার্ট লোডশেডিং ও ফাইবার ফল্ট ক্লাসিফিকেশন
     for (const cust of newlyDisconnected) {
       const area = cust.area || 'Main Area';
       const countInArea = areaDisconnectedMap[area] || 1;
 
-      let faultCategory = 'ONU_OFF'; // অনূ বন্ধ বা পাওয়ার কাট
+      let faultCategory = 'ONU_OFF'; 
       let faultTitle = 'কাস্টমার অনূ (ONU) বন্ধ বা বিদ্যুৎ নেই';
       let severity = 'LOW';
 
-      // একই এলাকায় ৩ বা তার বেশি ডিসকানেক্ট ➔ ফাইবার ক্যাবল কাটা
+      // ৩ জনের বেশি একসাথে বন্ধ হলে ➔ লোডশেডিং / ফাইবার প্রবলেম
       if (countInArea >= 3 && countInArea < 20) {
         faultCategory = 'FIBER_CUT';
-        faultTitle = `${area} এলাকায় ফাইবার ক্যাবল কাটা বা স্প্লিটার সমস্যা`;
+        faultTitle = `⚡ ${area} এলাকায় লোডশেডিং / ফাইবার স্প্লিটার বন্ধ (${countInArea} জন অফলাইন)`;
         severity = 'HIGH';
       } 
-      // প্রায় সবাই অফলাইন ➔ মেইন রাউটার ডাউন
+      // বড় ধরনের পাওয়ার কাট বা মেইন পপ ডাউন
       else if (totalOfflineCount > 50 && totalActiveCount < 10) {
         faultCategory = 'ROUTER_DOWN';
-        faultTitle = 'প্রধান মাইক্রোটিক রাউটার বা মেইন ইন্টারফেস বন্ধ';
+        faultTitle = '🚨 প্রধান রাউটার বা মেইন পপ-এ লোডশেডিং / বিদ্যুৎ বন্ধ';
         severity = 'CRITICAL';
       }
 
@@ -72,6 +73,20 @@ async function runNetworkDiagnostics() {
         severity: severity,
         time: new Date().toLocaleTimeString('bn-BD')
       });
+
+      // 🔔 নোটিফিকেশন স্প্যাম প্রতিরোধ (৫ মিনিটের কুলডাউন ফিল্টার)
+      const lastAlertTime = lastAlertTimeMap.get(area) || 0;
+      if (nowTime - lastAlertTime > 5 * 60 * 1000) { // ৫ মিনিট সময় বিরতি
+        lastAlertTimeMap.set(area, nowTime);
+
+        if (countInArea >= 3) {
+          sendPushAlert(
+            `⚡ লোডশেডিং অ্যালার্ট (${area})`,
+            `${area} এলাকায় লোডশেডিংয়ের কারণে ${countInArea} জন কাস্টমার অফলাইন হয়েছে।`,
+            { area, count: countInArea.toString() }
+          );
+        }
+      }
     }
 
     activeFaultsList = newFaults;
@@ -83,7 +98,7 @@ async function runNetworkDiagnostics() {
   }
 }
 
-// 🔔 ফায়ারবেস পুশ নোটিফিকেশন সেন্ডার (FCM)
+// 🔔 ফায়ারবেস পুশ নোটিফিকেশন সেন্ডার
 async function sendPushAlert(title, body, dataPayload = {}) {
   try {
     if (!admin || !admin.apps.length) return;
