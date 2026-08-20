@@ -6,15 +6,12 @@ const stream = require('stream');
 
 const app = express();
 
-// 🟢 CORS এবং বডি পার্সার
 app.use(cors({ origin: true, credentials: true }));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// 🟢 Multer ইন-মেমোরি স্টোরেজ (CSV ফাইলের জন্য)
 const upload = multer({ storage: multer.memoryStorage() });
 
-// 🟢 ইন-মেমোরি ডায়নামিক ডাটা স্টোর
 let settingsStore = {
   business_name: "Net Point",
   helpline: "",
@@ -31,7 +28,6 @@ let settingsStore = {
 let smsBalanceStore = 0;
 let staffStore = [];
 
-// 🟢 ফায়ারবেস সেফ ইনিশিয়ালাইজেশন
 let admin;
 try {
   admin = require('firebase-admin');
@@ -56,7 +52,6 @@ try {
   console.log("Firebase Admin Safe Catch:", err.message);
 }
 
-// 🗓️ ১৫ তারিখ নির্ণয়কারী ফাংশন
 function getNext15thDate() {
   const now = new Date();
   let year = now.getFullYear();
@@ -72,13 +67,11 @@ function getNext15thDate() {
   return `১৫ ${monthsBn[expiryDate.getMonth()]}, ${expiryDate.getFullYear()}`;
 }
 
-// 🟢 আল্ট্রা-স্মার্ট হেডার ও পজিশনাল পার্সার (কলাম নাম কাটা থাকলেও ১ম পজিশন থেকে আসল আইডি বের করবে)
 function getCsvVal(row, possibleKeys, defaultIndex = -1) {
   if (!row) return '';
   const rowKeys = Object.keys(row);
   const rowValues = Object.values(row);
 
-  // ১. নাম বা আংশিক নাম মিলিয়ে ডাটা খোঁজা
   for (const rawKey of rowKeys) {
     const cleanKey = rawKey.replace(/^\ufeff/, '').trim().toLowerCase();
     for (const targetKey of possibleKeys) {
@@ -90,7 +83,6 @@ function getCsvVal(row, possibleKeys, defaultIndex = -1) {
     }
   }
 
-  // ২. কলামের নাম না মিললে ইনডেক্স/পজিশন থেকে ডাটা নেওয়া
   if (defaultIndex >= 0 && defaultIndex < rowValues.length) {
     return (rowValues[defaultIndex] || '').toString().trim();
   }
@@ -98,7 +90,6 @@ function getCsvVal(row, possibleKeys, defaultIndex = -1) {
   return '';
 }
 
-// 🟢 হোম টেস্ট রুট
 app.get('/', (req, res) => {
   res.status(200).json({
     success: true,
@@ -106,7 +97,6 @@ app.get('/', (req, res) => {
   });
 });
 
-// 1. Auth Sync
 app.post('/api/v1/auth/sync', (req, res) => {
   res.status(200).json({
     success: true,
@@ -115,7 +105,6 @@ app.post('/api/v1/auth/sync', (req, res) => {
   });
 });
 
-// 2. Owner Dashboard Stats
 app.get('/api/v1/owner/dashboard-stats', (req, res) => {
   res.status(200).json({
     success: true,
@@ -129,9 +118,7 @@ app.get('/api/v1/owner/dashboard-stats', (req, res) => {
       monthly_collection: 0,
       total_due: 0,
       notification_count: 0,
-      
       sms_balance: smsBalanceStore,
-      
       recent_payments: [],
       notifications: [],
       settings: settingsStore
@@ -139,14 +126,11 @@ app.get('/api/v1/owner/dashboard-stats', (req, res) => {
   });
 });
 
-// 3. Customers API
 app.get('/api/v1/customers', (req, res) => {
   res.status(200).json({ success: true, data: [] });
 });
 
-// =========================================================================
-// 🟢 3.1. CSV IMPORT API (স্মার্ট পজিশনাল আইডি এক্সট্র্যাক্টর)
-// =========================================================================
+// 🟢 CSV IMPORT API (পুরোনো ভুল ডাটা সম্পূর্ণ মুছে নতুন আসল ডাটা সেভ)
 app.post('/api/v1/customers/import-csv', upload.single('file'), async (req, res) => {
   try {
     if (!req.file) {
@@ -167,15 +151,21 @@ app.post('/api/v1/customers/import-csv', upload.single('file'), async (req, res)
       .on('end', async () => {
         try {
           const db = admin.firestore();
+
+          // ১. ফায়ারবেস থেকে পুরোনো কাস্টমার কালেকশনের ভুল ডাটা ডিলিট করা
+          const existingDocs = await db.collection('customers').get();
+          const deleteBatch = db.batch();
+          existingDocs.forEach(doc => deleteBatch.delete(doc.ref));
+          if (!existingDocs.empty) {
+            await deleteBatch.commit();
+          }
+
           let batch = db.batch();
           let count = 0;
           let batchCount = 0;
 
           for (const row of results) {
-            // ১. কাস্টমার আইডি নেওয়া (১ম কলাম বা customer_id)
             const customerId = getCsvVal(row, ['customer', 'id', 'refer'], 0);
-            
-            // ২. PPPoE নাম নেওয়া (৩য় কলাম বা PPPoE_Name)
             const pppoeName = getCsvVal(row, ['pppoe', 'username'], 2) || getCsvVal(row, ['name_of', 'name'], 1);
             if (!pppoeName) continue;
 
@@ -189,7 +179,6 @@ app.post('/api/v1/customers/import-csv', upload.single('file'), async (req, res)
             const commentVal = getCsvVal(row, ['comment'], 18);
             const statusRaw = getCsvVal(row, ['status'], 9).toLowerCase();
 
-            // ৩. মোবাইল নম্বর সঠিকভাবে ফরম্যাট করা
             let rawPhone = getCsvVal(row, ['client_pho', 'phone', 'mobile'], 8);
             let formattedPhone = '';
             if (rawPhone) {
@@ -202,20 +191,17 @@ app.post('/api/v1/customers/import-csv', upload.single('file'), async (req, res)
               }
             }
 
-            // ৪. ফায়ারস্টোর ডকুমেন্ট আইডি
             const safeDocId = `CUST-${pppoeName.replace(/[/\.#?\[\]]/g, '_')}`;
             const customerRef = db.collection('customers').doc(safeDocId);
 
-            // ৫. স্ট্যাটাস বাংলা করা
             let statusText = 'অ্যাক্টিভ';
             if (statusRaw === 'expired' || statusRaw === 'unpaid') {
               statusText = 'মেয়াদোত্তীর্ণ';
             }
 
-            // ৬. ফায়ারবেসে সম্পূর্ণ নিখুঁত ডাটা সেভ
             const customerData = {
               id: safeDocId,
-              refer_id: customerId, // 🟢 এটি এখন সরাসরি ১ম কলাম থেকে আসল আইডি (1001, 1012, 1279) নেবে
+              refer_id: customerId || pppoeName,
               mikrotik: getCsvVal(row, ['client1_mik', 'client_mikrotik', 'mikrotik'], 5) || 'Anik-ACCESS',
               name: nameOfUser,
               pppoe_name: pppoeName,
@@ -263,24 +249,18 @@ app.post('/api/v1/customers/import-csv', upload.single('file'), async (req, res)
 
           return res.status(200).json({
             success: true,
-            message: `সফলভাবে ${count} জন কাস্টমারের আসল রেফার নম্বর (1001, 1279...) সহ ডাটা ফায়ারবেসে সেভ হয়েছে! 🎉`
+            message: `পুরোনো ডাটা মুছে সফলভাবে ${count} জন কাস্টমারের আসল রেফার নম্বর (1001, 1002...) সেভ হয়েছে! 🎉`
           });
 
         } catch (dbErr) {
           console.error('Firestore Import Error:', dbErr);
-          return res.status(500).json({
-            success: false,
-            message: 'ফায়ারবেস এরর: ' + dbErr.message
-          });
+          return res.status(500).json({ success: false, message: 'ফায়ারবেস এরর: ' + dbErr.message });
         }
       });
 
   } catch (err) {
     console.error('CSV Route Error:', err);
-    return res.status(500).json({
-      success: false,
-      message: 'সার্ভার এরর: ' + err.message
-    });
+    return res.status(500).json({ success: false, message: 'সার্ভার এরর: ' + err.message });
   }
 });
 
@@ -312,26 +292,18 @@ app.post('/api/v1/customers/add', (req, res) => {
 });
 
 app.post('/api/v1/customers/:id/disconnect', (req, res) => {
-  res.status(200).json({
-    success: true,
-    message: `কাস্টমার ${req.params.id} এর সংযোগ বন্ধ করা হয়েছে!`
-  });
+  res.status(200).json({ success: true, message: `কাস্টমার ${req.params.id} এর সংযোগ বন্ধ করা হয়েছে!` });
 });
 
-// 4. Transactions & Manual Approve
 app.get('/api/v1/transactions', (req, res) => {
   res.status(200).json({ success: true, data: [] });
 });
 
 app.post('/api/v1/payments/manual-approve', (req, res) => {
   const { refer_id, trx_id } = req.body || {};
-  res.status(200).json({
-    success: true,
-    message: `রেফারেন্স #${refer_id || ''} এবং TrxID #${trx_id || ''} ভেরিফাই হয়েছে!`
-  });
+  res.status(200).json({ success: true, message: `রেফারেন্স #${refer_id || ''} এবং TrxID #${trx_id || ''} ভেরিফাই হয়েছে!` });
 });
 
-// 5. Packages API
 app.get('/api/v1/packages', (req, res) => {
   res.status(200).json({ success: true, data: [] });
 });
@@ -340,7 +312,6 @@ app.put('/api/v1/packages/:id/toggle', (req, res) => {
   res.status(200).json({ success: true, message: "প্যাকেজের স্ট্যাটাস পরিবর্তন করা হয়েছে!" });
 });
 
-// 6. Reports API
 app.get('/api/v1/reports', (req, res) => {
   const range = req.query.range || "today";
   res.status(200).json({
@@ -356,7 +327,6 @@ app.get('/api/v1/reports', (req, res) => {
   });
 });
 
-// 7. Settings Update
 app.post('/api/v1/settings/update', (req, res) => {
   const data = req.body || {};
   
@@ -374,12 +344,10 @@ app.post('/api/v1/settings/update', (req, res) => {
   res.status(200).json({ success: true, message: "সেটিংস ও রাউটার ক্রেডেনশিয়াল সেভ করা হয়েছে!" });
 });
 
-// 8. Router Reboot
 app.post('/api/v1/router/reboot', (req, res) => {
   res.status(200).json({ success: true, message: "রাউটার রিবুট কমান্ড পাঠানো হয়েছে!" });
 });
 
-// 9. Installments API
 app.get('/api/v1/installments', (req, res) => {
   res.status(200).json({
     success: true,
@@ -392,12 +360,10 @@ app.get('/api/v1/installments', (req, res) => {
   });
 });
 
-// 10. Group SMS API
 app.post('/api/v1/customers/send-group-sms', (req, res) => {
   res.status(200).json({ success: true, message: "এসএমএস পাঠানো হয়েছে!" });
 });
 
-// 11. Buy SMS Package API
 app.post('/api/v1/sms/buy', (req, res) => {
   const { package_id } = req.body || {};
   let count = 500;
@@ -406,13 +372,9 @@ app.post('/api/v1/sms/buy', (req, res) => {
 
   smsBalanceStore += count;
 
-  res.status(200).json({ 
-    success: true, 
-    message: `আপনার ${count} টি এসএমএস রিচার্জ রিকোয়েস্ট গ্রহণ করা হয়েছে!` 
-  });
+  res.status(200).json({ success: true, message: `আপনার ${count} টি এসএমএস রিচার্জ রিকোয়েস্ট গ্রহণ করা হয়েছে!` });
 });
 
-// 12. STAFF MANAGEMENT API
 app.get('/api/v1/staff', (req, res) => {
   res.status(200).json({ success: true, data: staffStore });
 });
@@ -437,11 +399,7 @@ app.post('/api/v1/staff/add', (req, res) => {
 
     staffStore.push(newStaff);
 
-    res.status(200).json({
-      success: true,
-      data: newStaff,
-      message: `নতুন স্টাফ '${newStaff.name}' সফলভাবে সেভ করা হয়েছে!`
-    });
+    res.status(200).json({ success: true, data: newStaff, message: `নতুন স্টাফ '${newStaff.name}' সফলভাবে সেভ করা হয়েছে!` });
   } catch (err) {
     res.status(200).json({ success: false, message: "স্টাফ সেভ করতে সমস্যা হয়েছে" });
   }
