@@ -130,7 +130,51 @@ app.get('/api/v1/customers', (req, res) => {
   res.status(200).json({ success: true, data: [] });
 });
 
-// 🟢 CSV IMPORT API (পুরোনো ভুল ডাটা সম্পূর্ণ মুছে নতুন আসল ডাটা সেভ)
+// =========================================================================
+// 🧹 3.0. DATABASE CLEANER API (ফায়ারবেস থেকে সব ডুপ্লিকেট মুছে ফেলার এপিআই)
+// =========================================================================
+app.post('/api/v1/customers/clean-duplicates', async (req, res) => {
+  try {
+    if (!admin || !admin.apps.length) {
+      return res.status(500).json({ success: false, message: 'ফায়ারবেস ইনিশিয়ালাইজ করা নেই!' });
+    }
+
+    const db = admin.firestore();
+    const snapshot = await db.collection('customers').get();
+
+    const seenPppoe = new Set();
+    const batch = db.batch();
+    let deletedCount = 0;
+
+    snapshot.docs.forEach(doc => {
+      const data = doc.data();
+      const pppoe = (data.pppoe_name || data.name || '').trim().toLowerCase();
+
+      // ডুপ্লিকেট PPPoE বা র্যান্ডম টেস্ট আইডি পাওয়া গেলে মুছে ফেলা
+      if (!pppoe || seenPppoe.has(pppoe) || doc.id.startsWith('WIFI-')) {
+        batch.delete(doc.ref);
+        deletedCount++;
+      } else {
+        seenPppoe.add(pppoe);
+      }
+    });
+
+    await batch.commit();
+
+    return res.status(200).json({
+      success: true,
+      message: `ডাটাবেজ সম্পূর্ণ নেট অ্যান্ড ক্লিন করা হয়েছে! ${deletedCount}টি ডুপ্লিকেট ফাইল মুছে ফেলা হয়েছে।`
+    });
+
+  } catch (err) {
+    console.error('Clean Duplicates Error:', err);
+    return res.status(500).json({ success: false, message: 'ক্লিন করতে সমস্যা হয়েছে: ' + err.message });
+  }
+});
+
+// =========================================================================
+// 🟢 3.1. CSV IMPORT API
+// =========================================================================
 app.post('/api/v1/customers/import-csv', upload.single('file'), async (req, res) => {
   try {
     if (!req.file) {
@@ -152,7 +196,7 @@ app.post('/api/v1/customers/import-csv', upload.single('file'), async (req, res)
         try {
           const db = admin.firestore();
 
-          // ১. ফায়ারবেস থেকে পুরোনো কাস্টমার কালেকশনের ভুল ডাটা ডিলিট করা
+          // পুরোনো ভুল ডাটা সম্পূর্ণ সাফ করা
           const existingDocs = await db.collection('customers').get();
           const deleteBatch = db.batch();
           existingDocs.forEach(doc => deleteBatch.delete(doc.ref));
@@ -249,7 +293,7 @@ app.post('/api/v1/customers/import-csv', upload.single('file'), async (req, res)
 
           return res.status(200).json({
             success: true,
-            message: `পুরোনো ডাটা মুছে সফলভাবে ${count} জন কাস্টমারের আসল রেফার নম্বর (1001, 1002...) সেভ হয়েছে! 🎉`
+            message: `পুরোনো ডাটা মুছে সফলভাবে ${count} জন কাস্টমারের ডাটা সেভ করা হয়েছে! 🎉`
           });
 
         } catch (dbErr) {
