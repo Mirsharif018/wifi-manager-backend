@@ -5,7 +5,8 @@ const crypto = require('crypto');
 
 let activeFaultsList = [];
 const lastAlertTimeMap = new Map();
-let previousOnlineSet = null;
+const lastRestoreAlertTimeMap = new Map();
+let previousOnlineSet = null; // আগের স্ক্যানের লাইভ অনলাইন সেট
 
 // 🟢 মাইক্রোটিক রাউটার থেকে সরাসরি লাইভ অন-লাইন পিপিইওই কাস্টমার রিড করার ফাংশন
 function fetchMikrotikActiveUsers(host, port, username, password) {
@@ -105,7 +106,7 @@ async function runNetworkDiagnostics() {
       if (pppoe) allCustomersMap.set(pppoe, data);
     });
 
-    // ৩. রাউটার থেকে সরাসরি লাইভ অন-লাইন কাস্টমারদের লিস্ট ফেচ
+    // ৩. মাইক্রোটিক রাউটার থেকে সরাসরি লাইভ অন-লাইন পিপিইওই ইউজার আনা
     let liveOnlineUsers = await fetchMikrotikActiveUsers(routerIp, routerPort, routerUser, routerPass);
 
     const currentOnlineSet = new Set();
@@ -131,7 +132,7 @@ async function runNetworkDiagnostics() {
       return [];
     }
 
-    // ৪. কারেন্ট যাওয়ার পর নতুন অফলাইন হওয়া কাস্টমার বের করা
+    // 🔴 ৪. অফলাইন হওয়া কাস্টমার বের করা (আগে অনলাইনে ছিল কিন্তু এখন নেই)
     const newlyDisconnectedPppoe = [];
     const areaDisconnectedMap = {};
 
@@ -144,66 +145,108 @@ async function runNetworkDiagnostics() {
       }
     });
 
+    // 🟢 ৫. নতুন অনলাইন হওয়া কাস্টমার বের করা (আগে অফলাইন ছিল কিন্তু এখন লাইভ সচল!)
+    const newlyConnectedPppoe = [];
+    const areaConnectedMap = {};
+
+    currentOnlineSet.forEach(pppoe => {
+      if (!previousOnlineSet.has(pppoe)) {
+        newlyConnectedPppoe.push(pppoe);
+        const cust = allCustomersMap.get(pppoe);
+        const area = (cust && cust.area) ? cust.area : 'Main Area';
+        areaConnectedMap[area] = (areaConnectedMap[area] || 0) + 1;
+      }
+    });
+
+    // পরবর্তী স্ক্যানের জন্য অনলাইন সেট আপডেট
     previousOnlineSet = currentOnlineSet;
 
-    if (newlyDisconnectedPppoe.length === 0) {
-      return activeFaultsList;
-    }
-
-    const newFaults = [];
     const nowTime = Date.now();
 
-    // 🟢 লোডশেডিং ও ডিসকানেক্ট অ্যালার্ট নোটিফিকেশন তৈরি
-    for (const pppoe of newlyDisconnectedPppoe) {
-      const cust = allCustomersMap.get(pppoe) || { pppoe_name: pppoe, name: pppoe, refer_id: pppoe, area: 'Main Area' };
-      const area = cust.area || 'Main Area';
-      const countInArea = areaDisconnectedMap[area] || 1;
+    // 🟢 ৬. বিদ্যুৎ ফিরে আসা / কাস্টমার অনলাইন হওয়া নোটিফিকেশন ট্র্রিগার
+    if (newlyConnectedPppoe.length > 0) {
+      Object.keys(areaConnectedMap).forEach(area => {
+        const countInArea = areaConnectedMap[area];
+        const lastRestoreAlert = lastRestoreAlertTimeMap.get(area) || 0;
 
-      let faultCategory = 'ONU_OFF';
-      let faultTitle = 'কাস্টমার অনূ (ONU) বন্ধ বা বিদ্যুৎ নেই';
-      let severity = 'LOW';
+        if (nowTime - lastRestoreAlert > 3 * 60 * 1000) { // ৩ মিনিটের কুলডাউন ফিল্টার
+          lastRestoreAlertTimeMap.set(area, nowTime);
 
-      if (countInArea >= 3) {
-        faultCategory = 'FIBER_CUT';
-        faultTitle = `⚡ ${area} এলাকায় লোডশেডিং / ফাইবার স্প্লিটার বন্ধ (${countInArea} জন অফলাইন)`;
-        severity = 'HIGH';
-      }
-
-      newFaults.push({
-        id: `FLT-${cust.refer_id || pppoe}`,
-        customer_name: cust.name || pppoe,
-        pppoe_name: pppoe,
-        refer_id: cust.refer_id || pppoe,
-        phone: cust.phone || '',
-        area: area,
-        fault_category: faultCategory,
-        title: faultTitle,
-        severity: severity,
-        time: new Date().toLocaleTimeString('bn-BD')
-      });
-
-      // 🔔 ৫ মিনিটের কুলডাউন ফিল্টার ও লাইভ অন/অফলাইন সংখ্যা সহ পুশ মেসেজ
-      const lastAlertTime = lastAlertTimeMap.get(area) || 0;
-      if (nowTime - lastAlertTime > 5 * 60 * 1000) {
-        lastAlertTimeMap.set(area, nowTime);
-
-        if (countInArea >= 3) {
-          sendPushAlert(
-            `⚡ লোডশেডিং অ্যালার্ট (${area} এলাকা)`,
-            `বিদ্যুৎ যাওয়ার কারণে ${area} এলাকায় ${countInArea} জন অফলাইন হয়েছে। (বর্তমানে অনলাইনে: ${totalOnlineCount} জন, অফলাইনে: ${totalOfflineCount} জন)`,
-            { area, count: countInArea.toString() }
-          );
-        } else if (countInArea === 1) {
-          sendPushAlert(
-            `🔌 কাস্টমার অনূ (ONU) বন্ধ`,
-            `${cust.name || pppoe} (REF: ${cust.refer_id}) এর অনূ বন্ধ বা পাওয়ার নেই।`,
-            { refer_id: cust.refer_id }
-          );
+          if (countInArea >= 3) {
+            sendPushAlert(
+              `✅ বিদ্যুৎ ফিরে এসেছে / কাস্টমার অনলাইন (${area} এলাকা)`,
+              `${area} এলাকায় ${countInArea} জন কাস্টমার পুনরায় অনলাইনে সচল হয়েছে! (বর্তমানে মোট অনলাইনে: ${totalOnlineCount} জন, অফলাইনে: ${totalOfflineCount} জন)`,
+              { area, count: countInArea.toString(), type: 'POWER_RESTORED' }
+            );
+          } else if (countInArea === 1) {
+            const singlePppoe = newlyConnectedPppoe.find(p => (allCustomersMap.get(p)?.area || 'Main Area') === area);
+            const cust = allCustomersMap.get(singlePppoe);
+            sendPushAlert(
+              `🟢 কাস্টমার অনলাইন অ্যালার্ট`,
+              `${cust?.name || singlePppoe} (REF: ${cust?.refer_id || 'N/A'}) এর অনূ চালু হয়েছে এবং তিনি পুনরায় অনলাইনে যুক্ত হয়েছেন।`,
+              { refer_id: cust?.refer_id || singlePppoe, type: 'CUSTOMER_ONLINE' }
+            );
+          }
         }
-      }
+      });
     }
 
-    activeFaultsList = newFaults;
+    // 🔴 ৭. অফলাইন / লোডশেডিং অ্যালার্ট নোটিফিকেশন ট্র্রিগার
+    if (newlyDisconnectedPppoe.length > 0) {
+      const newFaults = [];
+
+      for (const pppoe of newlyDisconnectedPppoe) {
+        const cust = allCustomersMap.get(pppoe) || { pppoe_name: pppoe, name: pppoe, refer_id: pppoe, area: 'Main Area' };
+        const area = cust.area || 'Main Area';
+        const countInArea = areaDisconnectedMap[area] || 1;
+
+        let faultCategory = 'ONU_OFF';
+        let faultTitle = 'কাস্টমার অনূ (ONU) বন্ধ বা বিদ্যুৎ নেই';
+        let severity = 'LOW';
+
+        if (countInArea >= 3) {
+          faultCategory = 'FIBER_CUT';
+          faultTitle = `⚡ ${area} এলাকায় লোডশেডিং / ফাইবার স্প্লিটার বন্ধ (${countInArea} জন অফলাইন)`;
+          severity = 'HIGH';
+        }
+
+        newFaults.push({
+          id: `FLT-${cust.refer_id || pppoe}`,
+          customer_name: cust.name || pppoe,
+          pppoe_name: pppoe,
+          refer_id: cust.refer_id || pppoe,
+          phone: cust.phone || '',
+          area: area,
+          fault_category: faultCategory,
+          title: faultTitle,
+          severity: severity,
+          time: new Date().toLocaleTimeString('bn-BD')
+        });
+
+        // ৫ মিনিটের কুলডাউন ফিল্টার
+        const lastAlertTime = lastAlertTimeMap.get(area) || 0;
+        if (nowTime - lastAlertTime > 5 * 60 * 1000) {
+          lastAlertTimeMap.set(area, nowTime);
+
+          if (countInArea >= 3) {
+            sendPushAlert(
+              `⚡ লোডশেডিং অ্যালার্ট (${area} এলাকা)`,
+              `বিদ্যুৎ যাওয়ার কারণে ${area} এলাকায় ${countInArea} জন অফলাইন হয়েছে। (বর্তমানে অনলাইনে: ${totalOnlineCount} জন, অফলাইনে: ${totalOfflineCount} জন)`,
+              { area, count: countInArea.toString(), type: 'POWER_CUT' }
+            );
+          } else if (countInArea === 1) {
+            sendPushAlert(
+              `🔌 কাস্টমার অনূ (ONU) বন্ধ`,
+              `${cust.name || pppoe} (REF: ${cust.refer_id}) এর অনূ বন্ধ বা পাওয়ার নেই।`,
+              { refer_id: cust.refer_id, type: 'ONU_OFF' }
+            );
+          }
+        }
+      }
+
+      activeFaultsList = newFaults;
+    }
+
     return activeFaultsList;
 
   } catch (err) {
