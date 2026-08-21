@@ -2,7 +2,7 @@
 const admin = require('firebase-admin');
 
 let activeFaultsList = [];
-const lastAlertTimeMap = new Map(); // এরিয়া অনুযায়ী নোটিফিকেশন কুলডাউন সময়
+const lastAlertTimeMap = new Map();
 
 async function runNetworkDiagnostics() {
   try {
@@ -12,19 +12,26 @@ async function runNetworkDiagnostics() {
     const snapshot = await db.collection('customers').get();
     if (snapshot.empty) return [];
 
-    const currentCustomers = [];
-    const areaDisconnectedMap = {}; // এলাকা অনুযায়ী অফলাইন কাস্টমার সংখ্যা
+    const activePayingCustomers = [];
+    const areaDisconnectedMap = {};
 
+    // 🟢 সেফটি ফিল্টার: যাদের মেয়াদ শেষ ('মেয়াদোত্তীর্ণ'), তাদের মনিটরিং থেকে সম্পূর্ণ বাদ দেওয়া হলো
     snapshot.docs.forEach(doc => {
-      currentCustomers.push(doc.data());
+      const data = doc.data();
+      const statusText = (data.status || '').toString().trim();
+      
+      // শুধুমাত্র 'অ্যাক্টিভ' (বিল দেওয়া) কাস্টমারদের ডাটাবেজ ফিল্টার
+      if (statusText === 'অ্যাক্টিভ' || statusText === 'active') {
+        activePayingCustomers.push(data);
+      }
     });
 
     let totalActiveCount = 0;
     let totalOfflineCount = 0;
     const newlyDisconnected = [];
 
-    currentCustomers.forEach(cust => {
-      const isOnline = cust.status === 'অ্যাক্টিভ';
+    activePayingCustomers.forEach(cust => {
+      const isOnline = cust.is_online === true || cust.connection_state === 'online';
 
       if (isOnline) {
         totalActiveCount++;
@@ -39,7 +46,6 @@ async function runNetworkDiagnostics() {
     const newFaults = [];
     const nowTime = Date.now();
 
-    // 🟢 স্মার্ট লোডশেডিং ও ফাইবার ফল্ট ক্লাসিফিকেশন
     for (const cust of newlyDisconnected) {
       const area = cust.area || 'Main Area';
       const countInArea = areaDisconnectedMap[area] || 1;
@@ -48,13 +54,11 @@ async function runNetworkDiagnostics() {
       let faultTitle = 'কাস্টমার অনূ (ONU) বন্ধ বা বিদ্যুৎ নেই';
       let severity = 'LOW';
 
-      // ৩ জনের বেশি একসাথে বন্ধ হলে ➔ লোডশেডিং / ফাইবার প্রবলেম
       if (countInArea >= 3 && countInArea < 20) {
         faultCategory = 'FIBER_CUT';
         faultTitle = `⚡ ${area} এলাকায় লোডশেডিং / ফাইবার স্প্লিটার বন্ধ (${countInArea} জন অফলাইন)`;
         severity = 'HIGH';
       } 
-      // বড় ধরনের পাওয়ার কাট বা মেইন পপ ডাউন
       else if (totalOfflineCount > 50 && totalActiveCount < 10) {
         faultCategory = 'ROUTER_DOWN';
         faultTitle = '🚨 প্রধান রাউটার বা মেইন পপ-এ লোডশেডিং / বিদ্যুৎ বন্ধ';
@@ -74,15 +78,15 @@ async function runNetworkDiagnostics() {
         time: new Date().toLocaleTimeString('bn-BD')
       });
 
-      // 🔔 নোটিফিকেশন স্প্যাম প্রতিরোধ (৫ মিনিটের কুলডাউন ফিল্টার)
+      // 🔔 ৫ মিনিটের কুলডাউন ফিল্টার
       const lastAlertTime = lastAlertTimeMap.get(area) || 0;
-      if (nowTime - lastAlertTime > 5 * 60 * 1000) { // ৫ মিনিট সময় বিরতি
+      if (nowTime - lastAlertTime > 5 * 60 * 1000) {
         lastAlertTimeMap.set(area, nowTime);
 
         if (countInArea >= 3) {
           sendPushAlert(
-            `⚡ লোডশেডিং অ্যালার্ট (${area})`,
-            `${area} এলাকায় লোডশেডিংয়ের কারণে ${countInArea} জন কাস্টমার অফলাইন হয়েছে।`,
+            `⚡ লোডশেডিং / লাইন ডিসকানেক্ট (${area})`,
+            `${area} এলাকায় সক্রিয় কাস্টমারদের মধ্যে ${countInArea} জনের সংযোগ বিচ্ছিন্ন হয়েছে।`,
             { area, count: countInArea.toString() }
           );
         }
@@ -98,7 +102,6 @@ async function runNetworkDiagnostics() {
   }
 }
 
-// 🔔 ফায়ারবেস পুশ নোটিফিকেশন সেন্ডার
 async function sendPushAlert(title, body, dataPayload = {}) {
   try {
     if (!admin || !admin.apps.length) return;
