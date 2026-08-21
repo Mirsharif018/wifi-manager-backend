@@ -45,4 +45,22 @@ router.post('/check-now', async (req, res) => {
   }
 });
 
+// 🔔 ৩. সরাসরি মোবাইলে টেস্ট পুশ নোটিফিকেশন সেন্ড এপিআই
+router.post('/send-test-push', async (req, res) => {
+  try {
+    await faultDetector.sendPushAlert(
+      "🚨 টেস্ট পুশ নোটিফিকেশন",
+      "আপনার Wi-Fi Manager অ্যাপে ফায়ারবেস পুশ নোটিফিকেশন ১০০% সফলভাবে কাজ করছে! 🎉",
+      { type: 'TEST_ALERT' }
+    );
+
+    return res.json({
+      success: true,
+      message: "মোবাইলে টেস্ট পুশ নোটিফিকেশন সেন্ড করা হয়েছে! আপনার ফোনের স্ক্রিনে চেক করুন।"
+    });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: err.message });
+  }
+});
+
 module.exports = router;
