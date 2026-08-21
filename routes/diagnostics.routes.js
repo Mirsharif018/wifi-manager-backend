@@ -3,7 +3,7 @@ const express = require('express');
 const router = express.Router();
 const faultDetector = require('../services/fault_detector.service');
 
-// 🟢 ১. নেটওয়ার্ক ডায়াগনস্টিকস সামারি এপিআই
+// 🟢 ১. ফুল নেটওয়ার্ক ডায়াগনস্টিকস সামারি এপিআই (মোবাইল অ্যাপের জন্য)
 router.get('/summary', async (req, res) => {
   try {
     const faults = await faultDetector.runNetworkDiagnostics();
@@ -27,7 +27,17 @@ router.get('/summary', async (req, res) => {
   }
 });
 
-// 🟢 ২. ম্যানুয়াল নেটওয়ার্ক স্ক্যান এপিআই
+// 🟢 ২. ক্রন-জব (cron-job.org) এর জন্য স্পেশাল লাইটওয়েট এপিআই (মাত্র ২৫ বাইট রেসপন্স)
+router.get('/cron-ping', async (req, res) => {
+  try {
+    await faultDetector.runNetworkDiagnostics();
+    return res.status(200).json({ success: true, status: "OK" });
+  } catch (err) {
+    return res.status(200).json({ success: true, status: "ERROR" });
+  }
+});
+
+// 🟢 ৩. ম্যানুয়াল নেটওয়ার্ক স্ক্যান এপিআই
 router.post('/check-now', async (req, res) => {
   try {
     const faults = await faultDetector.runNetworkDiagnostics();
@@ -45,7 +55,7 @@ router.post('/check-now', async (req, res) => {
   }
 });
 
-// 🔔 ৩. সরাসরি মোবাইলে টেস্ট পুশ নোটিফিকেশন সেন্ড এপিআই
+// 🔔 ৪. টেস্ট পুশ নোটিফিকেশন সেন্ড এপিআই
 router.post('/send-test-push', async (req, res) => {
   try {
     await faultDetector.sendPushAlert(
@@ -56,7 +66,7 @@ router.post('/send-test-push', async (req, res) => {
 
     return res.json({
       success: true,
-      message: "মোবাইলে টেস্ট পুশ নোটিফিকেশন সেন্ড করা হয়েছে! আপনার ফোনের স্ক্রিনে চেক করুন।"
+      message: "মোবাইলে টেস্ট পুশ নোটিফিকেশন সেন্ড করা হয়েছে!"
     });
   } catch (err) {
     return res.status(500).json({ success: false, message: err.message });
