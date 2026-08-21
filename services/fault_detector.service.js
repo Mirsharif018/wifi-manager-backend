@@ -4,11 +4,8 @@ const net = require('net');
 const crypto = require('crypto');
 
 let activeFaultsList = [];
-const lastAlertTimeMap = new Map();
-const lastRestoreAlertTimeMap = new Map();
-let previousOnlineSet = null; // আগের স্ক্যানের লাইভ অনলাইন সেট
 
-// 🟢 মাইক্রোটিক রাউটার থেকে সরাসরি লাইভ অন-লাইন পিপিইওই কাস্টমার রিড করার ফাংশন
+// 🟢 মাইক্রোটিক রাউটার থেকে লাইভ অন-লাইন পিপিইওই কাস্টমার রিড করার ফাংশন
 function fetchMikrotikActiveUsers(host, port, username, password) {
   return new Promise((resolve) => {
     if (!host || !username) return resolve(null);
@@ -18,7 +15,7 @@ function fetchMikrotikActiveUsers(host, port, username, password) {
     let onlineUsers = [];
     let state = 'LOGIN';
 
-    socket.setTimeout(5000);
+    socket.setTimeout(6000);
 
     function encodeLength(len) {
       if (len < 0x80) return Buffer.from([len]);
@@ -106,11 +103,10 @@ async function runNetworkDiagnostics() {
       if (pppoe) allCustomersMap.set(pppoe, data);
     });
 
-    // ৩. মাইক্রোটিক রাউটার থেকে সরাসরি লাইভ অন-লাইন পিপিইওই ইউজার আনা
+    // ৩. রাউটার থেকে লাইভ অন-লাইন কাস্টমারদের ফেচ
     let liveOnlineUsers = await fetchMikrotikActiveUsers(routerIp, routerPort, routerUser, routerPass);
 
     const currentOnlineSet = new Set();
-
     if (liveOnlineUsers && Array.isArray(liveOnlineUsers)) {
       liveOnlineUsers.forEach(u => currentOnlineSet.add(u));
     } else {
@@ -125,27 +121,29 @@ async function runNetworkDiagnostics() {
     const totalOnlineCount = currentOnlineSet.size;
     const totalOfflineCount = Math.max(0, totalCustomersCount - totalOnlineCount);
 
-    // 🟢 বেসলাইন সেটআপ (১ম স্ক্যানে কোনো ফেক মেসেজ যাবে না)
-    if (previousOnlineSet === null) {
-      previousOnlineSet = currentOnlineSet;
-      console.log(`Live Baseline Set: Online ${totalOnlineCount}, Offline ${totalOfflineCount}`);
+    // 🟢 ফায়ারবেস থেকে আগের স্ক্যানের স্থায়ী (Persistent) অনলাইন স্টেট লোড
+    const stateDocRef = db.collection('system').doc('network_state');
+    const stateSnap = await stateDocRef.get();
+
+    let previousOnlineList = [];
+    if (stateSnap.exists) {
+      previousOnlineList = stateSnap.data().online_pppoe || [];
+    }
+
+    // যদি প্রথম স্ক্যান হয়, তবে ফায়ারবেসে কারেন্ট অনলাইনের স্থায়ী তালিকা সেভ করা
+    if (!stateSnap.exists) {
+      await stateDocRef.set({
+        online_pppoe: Array.from(currentOnlineSet),
+        online_count: totalOnlineCount,
+        updated_at: admin.firestore.FieldValue.serverTimestamp()
+      });
+      console.log(`Initial Persistent Baseline Set: Online ${totalOnlineCount}`);
       return [];
     }
 
-    // 🔴 ৪. অফলাইন হওয়া কাস্টমার বের করা (আগে অনলাইনে ছিল কিন্তু এখন নেই)
-    const newlyDisconnectedPppoe = [];
-    const areaDisconnectedMap = {};
+    const previousOnlineSet = new Set(previousOnlineList);
 
-    previousOnlineSet.forEach(pppoe => {
-      if (!currentOnlineSet.has(pppoe)) {
-        newlyDisconnectedPppoe.push(pppoe);
-        const cust = allCustomersMap.get(pppoe);
-        const area = (cust && cust.area) ? cust.area : 'Main Area';
-        areaDisconnectedMap[area] = (areaDisconnectedMap[area] || 0) + 1;
-      }
-    });
-
-    // 🟢 ৫. নতুন অনলাইন হওয়া কাস্টমার বের করা (আগে অফলাইন ছিল কিন্তু এখন লাইভ সচল!)
+    // 🟢 ৪. নতুন অনলাইন হওয়া কাস্টমার বের করা (আগে অফলাইন ছিল, এখন রাউটারে লাইভ সচল!)
     const newlyConnectedPppoe = [];
     const areaConnectedMap = {};
 
@@ -158,40 +156,41 @@ async function runNetworkDiagnostics() {
       }
     });
 
-    // পরবর্তী স্ক্যানের জন্য অনলাইন সেট আপডেট
-    previousOnlineSet = currentOnlineSet;
+    // 🔴 ৫. ডিসকানেক্ট হওয়া কাস্টমার বের করা (আগে অনলাইনে ছিল, এখন রাউটারে নেই!)
+    const newlyDisconnectedPppoe = [];
+    const areaDisconnectedMap = {};
 
-    const nowTime = Date.now();
+    previousOnlineSet.forEach(pppoe => {
+      if (!currentOnlineSet.has(pppoe)) {
+        newlyDisconnectedPppoe.push(pppoe);
+        const cust = allCustomersMap.get(pppoe);
+        const area = (cust && cust.area) ? cust.area : 'Main Area';
+        areaDisconnectedMap[area] = (areaDisconnectedMap[area] || 0) + 1;
+      }
+    });
 
-    // 🟢 ৬. বিদ্যুৎ ফিরে আসা / কাস্টমার অনলাইন হওয়া নোটিফিকেশন ট্র্রিগার
+    // 🟢 ফায়ারবেসে বর্তমান অনলাইনের তালিকা স্থায়ীভাবে সেভ (পরবর্তী স্ক্যানের জন্য)
+    await stateDocRef.set({
+      online_pppoe: Array.from(currentOnlineSet),
+      online_count: totalOnlineCount,
+      updated_at: admin.firestore.FieldValue.serverTimestamp()
+    }, { merge: true });
+
+    // 🔔 ৬. বিদ্যুৎ ফিরে আসার নোটিফিকেশন সেন্ড
     if (newlyConnectedPppoe.length > 0) {
       Object.keys(areaConnectedMap).forEach(area => {
         const countInArea = areaConnectedMap[area];
-        const lastRestoreAlert = lastRestoreAlertTimeMap.get(area) || 0;
-
-        if (nowTime - lastRestoreAlert > 3 * 60 * 1000) { // ৩ মিনিটের কুলডাউন ফিল্টার
-          lastRestoreAlertTimeMap.set(area, nowTime);
-
-          if (countInArea >= 3) {
-            sendPushAlert(
-              `✅ বিদ্যুৎ ফিরে এসেছে / কাস্টমার অনলাইন (${area} এলাকা)`,
-              `${area} এলাকায় ${countInArea} জন কাস্টমার পুনরায় অনলাইনে সচল হয়েছে! (বর্তমানে মোট অনলাইনে: ${totalOnlineCount} জন, অফলাইনে: ${totalOfflineCount} জন)`,
-              { area, count: countInArea.toString(), type: 'POWER_RESTORED' }
-            );
-          } else if (countInArea === 1) {
-            const singlePppoe = newlyConnectedPppoe.find(p => (allCustomersMap.get(p)?.area || 'Main Area') === area);
-            const cust = allCustomersMap.get(singlePppoe);
-            sendPushAlert(
-              `🟢 কাস্টমার অনলাইন অ্যালার্ট`,
-              `${cust?.name || singlePppoe} (REF: ${cust?.refer_id || 'N/A'}) এর অনূ চালু হয়েছে এবং তিনি পুনরায় অনলাইনে যুক্ত হয়েছেন।`,
-              { refer_id: cust?.refer_id || singlePppoe, type: 'CUSTOMER_ONLINE' }
-            );
-          }
+        if (countInArea >= 2) {
+          sendPushAlert(
+            `✅ বিদ্যুৎ ফিরে এসেছে / কাস্টমার অনলাইন (${area} এলাকা)`,
+            `${area} এলাকায় ${countInArea} জন কাস্টমার পুনরায় অনলাইনে সচল হয়েছে! (বর্তমানে মোট অনলাইনে: ${totalOnlineCount} জন, অফলাইনে: ${totalOfflineCount} জন)`,
+            { area, count: countInArea.toString(), type: 'POWER_RESTORED' }
+          );
         }
       });
     }
 
-    // 🔴 ৭. অফলাইন / লোডশেডিং অ্যালার্ট নোটিফিকেশন ট্র্রিগার
+    // 🔔 ৭. লাইন অফলাইন / লোডশেডিং নোটিফিকেশন সেন্ড
     if (newlyDisconnectedPppoe.length > 0) {
       const newFaults = [];
 
@@ -223,24 +222,18 @@ async function runNetworkDiagnostics() {
           time: new Date().toLocaleTimeString('bn-BD')
         });
 
-        // ৫ মিনিটের কুলডাউন ফিল্টার
-        const lastAlertTime = lastAlertTimeMap.get(area) || 0;
-        if (nowTime - lastAlertTime > 5 * 60 * 1000) {
-          lastAlertTimeMap.set(area, nowTime);
-
-          if (countInArea >= 3) {
-            sendPushAlert(
-              `⚡ লোডশেডিং অ্যালার্ট (${area} এলাকা)`,
-              `বিদ্যুৎ যাওয়ার কারণে ${area} এলাকায় ${countInArea} জন অফলাইন হয়েছে। (বর্তমানে অনলাইনে: ${totalOnlineCount} জন, অফলাইনে: ${totalOfflineCount} জন)`,
-              { area, count: countInArea.toString(), type: 'POWER_CUT' }
-            );
-          } else if (countInArea === 1) {
-            sendPushAlert(
-              `🔌 কাস্টমার অনূ (ONU) বন্ধ`,
-              `${cust.name || pppoe} (REF: ${cust.refer_id}) এর অনূ বন্ধ বা পাওয়ার নেই।`,
-              { refer_id: cust.refer_id, type: 'ONU_OFF' }
-            );
-          }
+        if (countInArea >= 3) {
+          sendPushAlert(
+            `⚡ লোডশেডিং অ্যালার্ট (${area} এলাকা)`,
+            `বিদ্যুৎ যাওয়ার কারণে ${area} এলাকায় ${countInArea} জন অফলাইন হয়েছে। (বর্তমানে অনলাইনে: ${totalOnlineCount} জন, অফলাইনে: ${totalOfflineCount} জন)`,
+            { area, count: countInArea.toString(), type: 'POWER_CUT' }
+          );
+        } else if (countInArea === 1) {
+          sendPushAlert(
+            `🔌 কাস্টমার অনূ (ONU) বন্ধ`,
+            `${cust.name || pppoe} (REF: ${cust.refer_id}) এর অনূ বন্ধ বা পাওয়ার নেই।`,
+            { refer_id: cust.refer_id, type: 'ONU_OFF' }
+          );
         }
       }
 
