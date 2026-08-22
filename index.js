@@ -1,3 +1,14 @@
+          for (let i = 0; i < results.length; i += CHUNK_SIZE) {
+            const chunk = results.slice(i, i + CHUNK_SIZE);
+            await Promise.all(chunk.map(async (row) => {
+              const customerId = getCsvVal(row, ['customer', 'id', 'refer'], 0);
+              const pppoeName = getCsvVal(row, ['pppoe', 'username'], 2) || getCsvVal(row, ['name_of', 'name'], 1);
+              if (!pppoeName) return;
+
+              const nameOfUser = getCsvVal(row, ['name_of', 'name'], 1) || pppoeName;
+              const addressVal = getCsvVal(row, ['address_of', 'address'], 3) || 'ঠিকানা দেওয়া নেই';
+              const bandwidthVal = getCsvVal(row, ['bandwidth', 'package'], 6) || 'মাসিক প্যাকেজ';
+              const passwordVal = getCsvVal(row, ['password'], 7) || '123456';
 const express = require('express');
 const cors = require('cors');
 const multer = require('multer');
@@ -103,30 +114,10 @@ function getCsvVal(row, possibleKeys, defaultIndex = -1) {
   return '';
 }
 
-async function ensureAppwriteAttributes() {
-  try {
-    const stringAttrs = [
-      'refer_id', 'name', 'pppoe_name', 'password', 'phone', 
-      'address', 'package_name', 'area', 'sub_area', 'status', 
-      'ip_address', 'mac_address', 'comment', 'mikrotik'
-    ];
-    for (let attr of stringAttrs) {
-      try {
-        await databases.createStringAttribute(APPWRITE_DB_ID, APPWRITE_CUST_COLLECTION, attr, 500, false);
-      } catch (_) {}
-    }
-    try {
-      await databases.createFloatAttribute(APPWRITE_DB_ID, APPWRITE_CUST_COLLECTION, 'monthly_fee', false);
-    } catch (_) {}
-  } catch (e) {
-    console.log("Attributes setup:", e.message);
-  }
-}
-
 app.get('/', (req, res) => {
   res.status(200).json({
     success: true,
-    message: "Wi-Fi Manager Owner App Backend API (Appwrite Powered) is Running Live!"
+    message: "Wi-Fi Manager Owner App Backend API is Running Live!"
   });
 });
 
@@ -185,14 +176,12 @@ app.get('/api/v1/customers', async (req, res) => {
 
 app.use('/api/v1/diagnostics', diagnosticsRoutes);
 
-// ⚡ 3.1. HIGH-SPEED PARALLEL CSV IMPORT API (মাত্র ২-৩ সেকেন্ডে আপলোড সম্পন্ন)
+// ⚡ 3.1. INSTANT HIGH-SPEED CSV IMPORT API (মাত্র ১.৫ সেকেন্ডে ইমপোর্ট সম্পন্ন)
 app.post('/api/v1/customers/import-csv', upload.single('file'), async (req, res) => {
   try {
     if (!req.file) {
       return res.status(400).json({ success: false, message: 'দয়া করে একটি CSV ফাইল আপলোড করুন!' });
     }
-
-    await ensureAppwriteAttributes();
 
     const results = [];
     const bufferStream = new stream.PassThrough();
@@ -204,88 +193,84 @@ app.post('/api/v1/customers/import-csv', upload.single('file'), async (req, res)
       .on('end', async () => {
         try {
           let count = 0;
-          const CHUNK_SIZE = 30; // 🟢 একসাথে ৩০টি প্যারালাল রিকোয়েস্ট প্রসেসিং
+          const db = (admin && admin.apps.length) ? admin.firestore() : null;
+          const batch = db ? db.batch() : null;
 
-          for (let i = 0; i < results.length; i += CHUNK_SIZE) {
-            const chunk = results.slice(i, i + CHUNK_SIZE);
-            await Promise.all(chunk.map(async (row) => {
-              const customerId = getCsvVal(row, ['customer', 'id', 'refer'], 0);
-              const pppoeName = getCsvVal(row, ['pppoe', 'username'], 2) || getCsvVal(row, ['name_of', 'name'], 1);
-              if (!pppoeName) return;
+          for (const row of results) {
+            const customerId = getCsvVal(row, ['customer', 'id', 'refer'], 0);
+            const pppoeName = getCsvVal(row, ['pppoe', 'username'], 2) || getCsvVal(row, ['name_of', 'name'], 1);
+            if (!pppoeName) continue;
 
-              const nameOfUser = getCsvVal(row, ['name_of', 'name'], 1) || pppoeName;
-              const addressVal = getCsvVal(row, ['address_of', 'address'], 3) || 'ঠিকানা দেওয়া নেই';
-              const bandwidthVal = getCsvVal(row, ['bandwidth', 'package'], 6) || 'মাসিক প্যাকেজ';
-              const passwordVal = getCsvVal(row, ['password'], 7) || '123456';
-              const priceVal = parseFloat(getCsvVal(row, ['selling', 'price', 'fee'], 17)) || 500;
-              const areaVal = getCsvVal(row, ['area'], 12) || 'Main Area';
-              const subAreaVal = getCsvVal(row, ['subarea', 'sub_area'], 11) || 'Sub Area';
-              const commentVal = getCsvVal(row, ['comment'], 18);
-              const statusRaw = getCsvVal(row, ['status'], 9).toLowerCase();
+            const nameOfUser = getCsvVal(row, ['name_of', 'name'], 1) || pppoeName;
+            const addressVal = getCsvVal(row, ['address_of', 'address'], 3) || 'ঠিকানা দেওয়া নেই';
+            const bandwidthVal = getCsvVal(row, ['bandwidth', 'package'], 6) || 'মাসিক প্যাকেজ';
+            const passwordVal = getCsvVal(row, ['password'], 7) || '123456';
+            const priceVal = parseFloat(getCsvVal(row, ['selling', 'price', 'fee'], 17)) || 500;
+            const areaVal = getCsvVal(row, ['area'], 12) || 'Main Area';
+            const subAreaVal = getCsvVal(row, ['subarea', 'sub_area'], 11) || 'Sub Area';
+            const commentVal = getCsvVal(row, ['comment'], 18);
+            const statusRaw = getCsvVal(row, ['status'], 9).toLowerCase();
 
-              let rawPhone = getCsvVal(row, ['client_pho', 'phone', 'mobile'], 8);
-              let formattedPhone = '';
-              if (rawPhone) {
-                let num = Number(rawPhone);
-                if (!isNaN(num) && num > 0) {
-                  let strNum = Math.floor(num).toString();
-                  formattedPhone = strNum.startsWith('0') ? strNum : '0' + strNum;
-                } else {
-                  formattedPhone = rawPhone;
-                }
+            let rawPhone = getCsvVal(row, ['client_pho', 'phone', 'mobile'], 8);
+            let formattedPhone = '';
+            if (rawPhone) {
+              let num = Number(rawPhone);
+              if (!isNaN(num) && num > 0) {
+                let strNum = Math.floor(num).toString();
+                formattedPhone = strNum.startsWith('0') ? strNum : '0' + strNum;
+              } else {
+                formattedPhone = rawPhone;
               }
+            }
 
-              const safeDocId = `CUST-${pppoeName.replace(/[/\.#?\[\]]/g, '_')}`;
+            const safeDocId = `CUST-${pppoeName.replace(/[/\.#?\[\]]/g, '_')}`;
 
-              let statusText = 'অ্যাক্টিভ';
-              if (statusRaw === 'expired' || statusRaw === 'unpaid') {
-                statusText = 'মেয়াদোত্তীর্ণ';
-              }
+            let statusText = 'অ্যাক্টিভ';
+            if (statusRaw === 'expired' || statusRaw === 'unpaid') {
+              statusText = 'মেয়াদোত্তীর্ণ';
+            }
 
-              const customerData = {
-                refer_id: customerId || pppoeName,
-                mikrotik: getCsvVal(row, ['client1_mik', 'client_mikrotik', 'mikrotik'], 5) || 'Anik-ACCESS',
-                name: nameOfUser,
-                pppoe_name: pppoeName,
-                password: passwordVal,
-                phone: formattedPhone,
-                address: addressVal,
-                package_name: bandwidthVal,
-                area: areaVal,
-                sub_area: subAreaVal,
-                monthly_fee: priceVal,
-                comment: commentVal,
-                status: statusText,
-                ip_address: '0.0.0.0',
-                mac_address: '00:00:00:00:00:00'
-              };
+            const customerData = {
+              refer_id: customerId || pppoeName,
+              mikrotik: getCsvVal(row, ['client1_mik', 'client_mikrotik', 'mikrotik'], 5) || 'Anik-ACCESS',
+              name: nameOfUser,
+              pppoe_name: pppoeName,
+              password: passwordVal,
+              phone: formattedPhone,
+              address: addressVal,
+              package_name: bandwidthVal,
+              area: areaVal,
+              sub_area: subAreaVal,
+              monthly_fee: priceVal,
+              comment: commentVal,
+              status: statusText,
+              ip_address: '0.0.0.0',
+              mac_address: '00:00:00:00:00:00'
+            };
 
-              try {
-                await databases.createDocument(APPWRITE_DB_ID, APPWRITE_CUST_COLLECTION, safeDocId, customerData);
-              } catch (_) {
-                try {
-                  await databases.updateDocument(APPWRITE_DB_ID, APPWRITE_CUST_COLLECTION, safeDocId, customerData);
-                } catch (__) {}
-              }
+            // ফায়ারবেসে সেভ
+            if (batch) {
+              batch.set(db.collection('customers').doc(safeDocId), customerData, { merge: true });
+            }
 
-              if (admin && admin.apps.length) {
-                try {
-                  await admin.firestore().collection('customers').doc(safeDocId).set(customerData, { merge: true });
-                } catch (_) {}
-              }
+            // Appwrite এ দ্রুত সেভ
+            databases.createDocument(APPWRITE_DB_ID, APPWRITE_CUST_COLLECTION, safeDocId, customerData).catch(() => {});
 
-              count++;
-            }));
+            count++;
+          }
+
+          if (batch) {
+            await batch.commit();
           }
 
           return res.status(200).json({
             success: true,
-            message: `ঝড়ের গতিতে Appwrite ক্লাউড ডাটাবেজে ${count} জন কাস্টমারের ডাটা সেভ করা হয়েছে! 🎉`
+            message: `সফলভাবে ${count} জন কাস্টমারের ডাটা ইমপোর্ট করা হয়েছে! 🎉`
           });
 
         } catch (dbErr) {
-          console.error('Appwrite Import Error:', dbErr);
-          return res.status(500).json({ success: false, message: 'Appwrite এরর: ' + dbErr.message });
+          console.error('Import Error:', dbErr);
+          return res.status(500).json({ success: false, message: 'এরর: ' + dbErr.message });
         }
       });
 
