@@ -3,7 +3,7 @@ const express = require('express');
 const router = express.Router();
 const faultDetector = require('../services/fault_detector.service');
 
-// 🟢 ১. ফুল নেটওয়ার্ক ডায়াগনস্টিকস সামারি এপিআই (মোবাইল অ্যাপের জন্য)
+// 🟢 ১. ফুল নেটওয়ার্ক ডায়াগনস্টিকস সামারি এপিআই
 router.get('/summary', async (req, res) => {
   try {
     const faults = await faultDetector.runNetworkDiagnostics();
@@ -27,7 +27,7 @@ router.get('/summary', async (req, res) => {
   }
 });
 
-// 🟢 ২. ক্রন-জব (cron-job.org) এর জন্য স্পেশাল লাইটওয়েট এপিআই (মাত্র ২৫ বাইট রেসপন্স)
+// 🟢 ২. ক্রন-জব লাইটওয়েট পিং এপিআই
 router.get('/cron-ping', async (req, res) => {
   try {
     await faultDetector.runNetworkDiagnostics();
@@ -37,25 +37,47 @@ router.get('/cron-ping', async (req, res) => {
   }
 });
 
-// 🟢 ৩. ম্যানুয়াল নেটওয়ার্ক স্ক্যান এপিআই
+// 🟢 ৩. ম্যানুয়াল স্ক্যান এপিআই
 router.post('/check-now', async (req, res) => {
   try {
     const faults = await faultDetector.runNetworkDiagnostics();
-    
     return res.json({
       success: true,
-      message: "নেটওয়ার্ক ডায়াগনস্টিক স্ক্যান সফল হয়েছে!",
-      data: {
-        total_faults: faults.length,
-        faults_list: faults
-      }
+      message: "স্ক্যান সফল হয়েছে!",
+      data: { total_faults: faults.length, faults_list: faults }
     });
   } catch (err) {
     return res.status(500).json({ success: false, message: err.message });
   }
 });
 
-// 🔔 ৪. টেস্ট পুশ নোটিফিকেশন সেন্ড এপিআই
+// ⚡ ৪. মাইক্রোটিক সরাসরি অনূ বন্ধ নোটিফিকেশন ওয়েবহুক (Instant User Down)
+router.get('/user-down', async (req, res) => {
+  try {
+    const username = (req.query.user || req.query.username || '').trim();
+    if (username) {
+      await faultDetector.handleUserDisconnectedEvent(username);
+    }
+    return res.status(200).send("OK");
+  } catch (err) {
+    return res.status(200).send("OK");
+  }
+});
+
+// ⚡ ৫. মাইক্রোটিক সরাসরি অনূ চালু নোটিফিকেশন ওয়েবহুক (Instant User Up)
+router.get('/user-up', async (req, res) => {
+  try {
+    const username = (req.query.user || req.query.username || '').trim();
+    if (username) {
+      await faultDetector.handleUserConnectedEvent(username);
+    }
+    return res.status(200).send("OK");
+  } catch (err) {
+    return res.status(200).send("OK");
+  }
+});
+
+// 🔔 ৬. টেস্ট পুশ এপিআই
 router.post('/send-test-push', async (req, res) => {
   try {
     await faultDetector.sendPushAlert(
@@ -63,11 +85,7 @@ router.post('/send-test-push', async (req, res) => {
       "আপনার Wi-Fi Manager অ্যাপে ফায়ারবেস পুশ নোটিফিকেশন ১০০% সফলভাবে কাজ করছে! 🎉",
       { type: 'TEST_ALERT' }
     );
-
-    return res.json({
-      success: true,
-      message: "মোবাইলে টেস্ট পুশ নোটিফিকেশন সেন্ড করা হয়েছে!"
-    });
+    return res.json({ success: true, message: "টেস্ট পুশ নোটিফিকেশন সেন্ড করা হয়েছে!" });
   } catch (err) {
     return res.status(500).json({ success: false, message: err.message });
   }
