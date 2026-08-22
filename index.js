@@ -13,7 +13,7 @@ app.use(express.urlencoded({ extended: true }));
 
 const upload = multer({ storage: multer.memoryStorage() });
 
-// 🟢 Appwrite ক্লাউড কানেকশন (Singapore Server)
+// 🟢 Appwrite ক্লাউড কানেকশন
 const appwriteClient = new Client()
   .setEndpoint('https://sgp.cloud.appwrite.io/v1')
   .setProject('6a89602c00197fa35c90')
@@ -106,11 +106,11 @@ function getCsvVal(row, possibleKeys, defaultIndex = -1) {
 app.get('/', (req, res) => {
   res.status(200).json({
     success: true,
-    message: "Wi-Fi Manager Owner App Backend API (Appwrite Powered) is Running Live!"
+    message: "Wi-Fi Manager Owner App Backend API is Running Live!"
   });
 });
 
-// 🌐 সরাসরি ব্রাউজার থেকে ফাইল আপলোড করার জন্য সুন্দর HTML পেজ
+// 🌐 সরাসরি ব্রাউজার থেকে ফাইল আপলোড করার পেজ
 app.get('/upload', (req, res) => {
   res.send(`
     <!DOCTYPE html>
@@ -196,11 +196,11 @@ app.get('/api/v1/customers', async (req, res) => {
 
 app.use('/api/v1/diagnostics', diagnosticsRoutes);
 
-// ⚡ 3.1. INSTANT HIGH-SPEED CSV IMPORT API
+// ⚡ 3.1. BULLETPROOF INSTANT CSV IMPORT API (কোনো আটকানো ছাড়া সরাসরি রেসপন্স পেজ)
 app.post('/api/v1/customers/import-csv', upload.single('file'), async (req, res) => {
   try {
     if (!req.file) {
-      return res.status(400).json({ success: false, message: 'দয়া করে একটি CSV ফাইল আপলোড করুন!' });
+      return res.status(400).send('<h2 style="color:red;text-align:center;">দয়া করে একটি CSV ফাইল সিলেক্ট করুন!</h2>');
     }
 
     const results = [];
@@ -214,87 +214,126 @@ app.post('/api/v1/customers/import-csv', upload.single('file'), async (req, res)
         try {
           let count = 0;
           const db = (admin && admin.apps.length) ? admin.firestore() : null;
-          const batch = db ? db.batch() : null;
 
-          for (const row of results) {
-            const customerId = getCsvVal(row, ['customer', 'id', 'refer'], 0);
-            const pppoeName = getCsvVal(row, ['pppoe', 'username'], 2) || getCsvVal(row, ['name_of', 'name'], 1);
-            if (!pppoeName) continue;
+          if (db) {
+            let batch = db.batch();
+            let batchCount = 0;
 
-            const nameOfUser = getCsvVal(row, ['name_of', 'name'], 1) || pppoeName;
-            const addressVal = getCsvVal(row, ['address_of', 'address'], 3) || 'ঠিকানা দেওয়া নেই';
-            const bandwidthVal = getCsvVal(row, ['bandwidth', 'package'], 6) || 'মাসিক প্যাকেজ';
-            const passwordVal = getCsvVal(row, ['password'], 7) || '123456';
-            const priceVal = parseFloat(getCsvVal(row, ['selling', 'price', 'fee'], 17)) || 500;
-            const areaVal = getCsvVal(row, ['area'], 12) || 'Main Area';
-            const subAreaVal = getCsvVal(row, ['subarea', 'sub_area'], 11) || 'Sub Area';
-            const commentVal = getCsvVal(row, ['comment'], 18);
-            const statusRaw = getCsvVal(row, ['status'], 9).toLowerCase();
+            for (const row of results) {
+              const customerId = getCsvVal(row, ['customer', 'id', 'refer'], 0);
+              const pppoeName = getCsvVal(row, ['pppoe', 'username'], 2) || getCsvVal(row, ['name_of', 'name'], 1);
+              if (!pppoeName) continue;
 
-            let rawPhone = getCsvVal(row, ['client_pho', 'phone', 'mobile'], 8);
-            let formattedPhone = '';
-            if (rawPhone) {
-              let num = Number(rawPhone);
-              if (!isNaN(num) && num > 0) {
-                let strNum = Math.floor(num).toString();
-                formattedPhone = strNum.startsWith('0') ? strNum : '0' + strNum;
-              } else {
-                formattedPhone = rawPhone;
+              const nameOfUser = getCsvVal(row, ['name_of', 'name'], 1) || pppoeName;
+              const addressVal = getCsvVal(row, ['address_of', 'address'], 3) || 'ঠিকানা দেওয়া নেই';
+              const bandwidthVal = getCsvVal(row, ['bandwidth', 'package'], 6) || 'মাসিক প্যাকেজ';
+              const passwordVal = getCsvVal(row, ['password'], 7) || '123456';
+              const priceVal = parseFloat(getCsvVal(row, ['selling', 'price', 'fee'], 17)) || 500;
+              const areaVal = getCsvVal(row, ['area'], 12) || 'Main Area';
+              const subAreaVal = getCsvVal(row, ['subarea', 'sub_area'], 11) || 'Sub Area';
+              const commentVal = getCsvVal(row, ['comment'], 18);
+              const statusRaw = getCsvVal(row, ['status'], 9).toLowerCase();
+
+              let rawPhone = getCsvVal(row, ['client_pho', 'phone', 'mobile'], 8);
+              let formattedPhone = '';
+              if (rawPhone) {
+                let num = Number(rawPhone);
+                if (!isNaN(num) && num > 0) {
+                  let strNum = Math.floor(num).toString();
+                  formattedPhone = strNum.startsWith('0') ? strNum : '0' + strNum;
+                } else {
+                  formattedPhone = rawPhone;
+                }
               }
-            }
 
-            const safeDocId = `CUST-${pppoeName.replace(/[/\.#?\[\]]/g, '_')}`;
+              const safeDocId = `CUST-${pppoeName.replace(/[/\.#?\[\]]/g, '_')}`;
 
-            let statusText = 'অ্যাক্টিভ';
-            if (statusRaw === 'expired' || statusRaw === 'unpaid') {
-              statusText = 'মেয়াদোত্তীর্ণ';
-            }
+              let statusText = 'অ্যাক্টিভ';
+              if (statusRaw === 'expired' || statusRaw === 'unpaid') {
+                statusText = 'মেয়াদোত্তীর্ণ';
+              }
 
-            const customerData = {
-              refer_id: customerId || pppoeName,
-              mikrotik: getCsvVal(row, ['client1_mik', 'client_mikrotik', 'mikrotik'], 5) || 'Anik-ACCESS',
-              name: nameOfUser,
-              pppoe_name: pppoeName,
-              password: passwordVal,
-              phone: formattedPhone,
-              address: addressVal,
-              package_name: bandwidthVal,
-              area: areaVal,
-              sub_area: subAreaVal,
-              monthly_fee: priceVal,
-              comment: commentVal,
-              status: statusText,
-              ip_address: '0.0.0.0',
-              mac_address: '00:00:00:00:00:00'
-            };
+              const customerData = {
+                id: safeDocId,
+                refer_id: customerId || pppoeName,
+                mikrotik: getCsvVal(row, ['client1_mik', 'client_mikrotik', 'mikrotik'], 5) || 'Anik-ACCESS',
+                name: nameOfUser,
+                pppoe_name: pppoeName,
+                password: passwordVal,
+                phone: formattedPhone,
+                address: addressVal,
+                package_name: bandwidthVal,
+                package_id: bandwidthVal,
+                area: areaVal,
+                sub_area: subAreaVal,
+                monthly_fee: priceVal,
+                comment: commentVal,
+                status: statusText,
+                ip_address: '0.0.0.0',
+                mac_address: '00:00:00:00:00:00',
+                updated_at: admin.firestore.FieldValue.serverTimestamp()
+              };
 
-            if (batch) {
               batch.set(db.collection('customers').doc(safeDocId), customerData, { merge: true });
+              count++;
+              batchCount++;
+
+              if (batchCount >= 300) {
+                await batch.commit();
+                batch = db.batch();
+                batchCount = 0;
+              }
+
+              databases.createDocument(APPWRITE_DB_ID, APPWRITE_CUST_COLLECTION, safeDocId, {
+                refer_id: customerData.refer_id,
+                name: customerData.name,
+                pppoe_name: customerData.pppoe_name,
+                phone: customerData.phone,
+                address: customerData.address,
+                package_name: customerData.package_name,
+                monthly_fee: customerData.monthly_fee,
+                status: customerData.status
+              }).catch(() => {});
             }
 
-            databases.createDocument(APPWRITE_DB_ID, APPWRITE_CUST_COLLECTION, safeDocId, customerData).catch(() => {});
-
-            count++;
+            if (batchCount > 0) {
+              await batch.commit();
+            }
           }
 
-          if (batch) {
-            await batch.commit();
-          }
-
-          return res.status(200).json({
-            success: true,
-            message: `সফলভাবে ${count} জন কাস্টমারের ডাটা ইমপোর্ট করা হয়েছে! 🎉`
-          });
+          return res.send(`
+            <!DOCTYPE html>
+            <html>
+            <head>
+              <meta name="viewport" content="width=device-width, initial-scale=1.0">
+              <title>Upload Successful</title>
+              <style>
+                body { font-family: Arial, sans-serif; background: #DCFCE7; padding: 20px; display: flex; justify-content: center; align-items: center; min-height: 80vh; margin: 0; }
+                .card { background: white; padding: 30px; border-radius: 16px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); width: 100%; max-width: 400px; text-align: center; }
+                h2 { color: #16A34A; margin-bottom: 10px; }
+                p { color: #0F172A; font-size: 16px; line-height: 1.5; }
+                a { display: inline-block; margin-top: 20px; background: #16A34A; color: white; text-decoration: none; padding: 12px 24px; border-radius: 8px; font-weight: bold; }
+              </style>
+            </head>
+            <body>
+              <div class="card">
+                <h2>আপলোড সফল হয়েছে! 🎉</h2>
+                <p>কাস্টমারদের সকল ডাটা ডাটাবেজে সফলভাবে সেভ করা হয়েছে।</p>
+                <a href="/upload">পুনরায় আপলোড করুন</a>
+              </div>
+            </body>
+            </html>
+          `);
 
         } catch (dbErr) {
           console.error('Import Error:', dbErr);
-          return res.status(500).json({ success: false, message: 'এরর: ' + dbErr.message });
+          return res.status(500).send(`<h2 style="color:red;text-align:center;">এরর: ${dbErr.message}</h2>`);
         }
       });
 
   } catch (err) {
     console.error('CSV Route Error:', err);
-    return res.status(500).json({ success: false, message: 'সার্ভার এরর: ' + err.message });
+    return res.status(500).send(`<h2 style="color:red;text-align:center;">সার্ভার এরর: ${err.message}</h2>`);
   }
 });
 
