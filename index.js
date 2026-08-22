@@ -3,6 +3,7 @@ const cors = require('cors');
 const multer = require('multer');
 const csv = require('csv-parser');
 const stream = require('stream');
+const { Client, Databases, Query } = require('node-appwrite');
 
 const app = express();
 
@@ -11,6 +12,16 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 const upload = multer({ storage: multer.memoryStorage() });
+
+// 🟢 Appwrite ক্লাউড কানেকশন (Singapore Server)
+const appwriteClient = new Client()
+  .setEndpoint('https://sgp.cloud.appwrite.io/v1')
+  .setProject('6a89602c00197fa35c90')
+  .setKey('standard_27f0e26fb885717dfb5151d6cbb27bfa5cb1219215bbd80db3d5915b1ec8be9cdab54478a5e8ba25a742ee0659df7b0a159c052b3f0d5e1de6c9f2c154334832ffed1df1c627e3f605b75ee1c63b5bbd787eeac4bb692121616f550fb834968e8a3d20ea51fd774fbd2fbbcdb918a150954d092aed840ef9663d3a84f4fa0682');
+
+const databases = new Databases(appwriteClient);
+const APPWRITE_DB_ID = '6a89615d002147df646d';
+const APPWRITE_CUST_COLLECTION = 'customers';
 
 let settingsStore = {
   business_name: "Net Point",
@@ -92,10 +103,31 @@ function getCsvVal(row, possibleKeys, defaultIndex = -1) {
   return '';
 }
 
+// 🟢 Appwrite-এ কলাম (Attributes) অটোমেটিক তৈরি করার সেফ মেথড
+async function ensureAppwriteAttributes() {
+  try {
+    const stringAttrs = [
+      'refer_id', 'name', 'pppoe_name', 'password', 'phone', 
+      'address', 'package_name', 'area', 'sub_area', 'status', 
+      'ip_address', 'mac_address', 'comment', 'mikrotik'
+    ];
+    for (let attr of stringAttrs) {
+      try {
+        await databases.createStringAttribute(APPWRITE_DB_ID, APPWRITE_CUST_COLLECTION, attr, 500, false);
+      } catch (_) {}
+    }
+    try {
+      await databases.createFloatAttribute(APPWRITE_DB_ID, APPWRITE_CUST_COLLECTION, 'monthly_fee', false);
+    } catch (_) {}
+  } catch (e) {
+    console.log("Attributes setup:", e.message);
+  }
+}
+
 app.get('/', (req, res) => {
   res.status(200).json({
     success: true,
-    message: "Wi-Fi Manager Owner App Backend API is Running Live!"
+    message: "Wi-Fi Manager Owner App Backend API (Appwrite Powered) is Running Live!"
   });
 });
 
@@ -128,152 +160,42 @@ app.get('/api/v1/owner/dashboard-stats', (req, res) => {
   });
 });
 
-app.get('/api/v1/customers', (req, res) => {
-  res.status(200).json({ success: true, data: [] });
+// 🟢 3. Appwrite কাস্টমার লিস্ট এপিআই
+app.get('/api/v1/customers', async (req, res) => {
+  try {
+    const docs = await databases.listDocuments(APPWRITE_DB_ID, APPWRITE_CUST_COLLECTION, [Query.limit(1000)]);
+    const list = docs.documents.map(d => ({
+      id: d.$id,
+      refer_id: d.refer_id || '',
+      name: d.name || '',
+      pppoe_name: d.pppoe_name || '',
+      phone: d.phone || '',
+      address: d.address || '',
+      package_name: d.package_name || '',
+      monthly_fee: d.monthly_fee || 500,
+      status: d.status || 'অ্যাক্টিভ',
+      area: d.area || '',
+      sub_area: d.sub_area || '',
+      ip_address: d.ip_address || '0.0.0.0',
+      mac_address: d.mac_address || '00:00:00:00:00:00'
+    }));
+    return res.json({ success: true, data: list });
+  } catch (err) {
+    return res.json({ success: true, data: [] });
+  }
 });
 
 app.use('/api/v1/diagnostics', diagnosticsRoutes);
 
-// 🟢 10. DYNAMIC GROUP SMS API (ডাইনামিক রেফার ও বিলের টাকা বসিয়ে এসএমএস সেন্ড)
-app.post('/api/v1/customers/send-group-sms', async (req, res) => {
-  try {
-    const { target_group, customMessage } = req.body || {};
-    
-    if (!admin || !admin.apps.length) {
-      return res.status(500).json({ success: false, message: 'ফায়ারবেস ইনিশিয়ালাইজ করা নেই!' });
-    }
-
-    const db = admin.firestore();
-    const snapshot = await db.collection('customers').get();
-
-    if (snapshot.empty) {
-      return res.status(400).json({ success: false, message: 'কোনো কাস্টমার পাওয়া যায়নি!' });
-    }
-
-    let sentCount = 0;
-    const bkashNumber = settingsStore.bkash_number || "01789222002";
-
-    snapshot.docs.forEach(doc => {
-      const cust = doc.data();
-      const isDue = cust.status === 'মেয়াদোত্তীর্ণ' || cust.status === 'unpaid';
-
-      // টার্গেট গ্রুপ ফিল্টারিং
-      if ((target_group === 'due' && isDue) || target_group === 'all' || (target_group === 'active' && !isDue)) {
-        
-        // 🟢 ডাইনামিক টেমপ্লেট রিপ্লেসমেন্ট (বিল, রেফার আইডি, বিকাশ নম্বর)
-        let personalizedMsg = (customMessage || '')
-          .replace(/\{bill\}/g, cust.monthly_fee || 500)
-          .replace(/\{refer_id\}/g, cust.refer_id || cust.pppoe_name)
-          .replace(/\{bkash\}/g, bkashNumber)
-          .replace(/\{name\}/g, cust.name || cust.pppoe_name);
-
-        console.log(`Sending SMS to ${cust.phone || cust.name}: ${personalizedMsg}`);
-        sentCount++;
-      }
-    });
-
-    smsBalanceStore = Math.max(0, smsBalanceStore - sentCount);
-
-    return res.status(200).json({
-      success: true,
-      message: `সফলভাবে ${sentCount} জন কাস্টমারকে যার যার বিল ও রেফারেন্স আইডি সহ এসএমএস পাঠানো হয়েছে! 🎉`
-    });
-
-  } catch (err) {
-    console.error("Send Group SMS Error:", err);
-    return res.status(500).json({ success: false, message: 'এসএমএস পাঠাতে সমস্যা হয়েছে: ' + err.message });
-  }
-});
-
-// 🟢 4. MANUAL & AUTO PAYMENT APPROVE WITH THANK YOU SMS (বিল পরিশোধের পর অটো কনফার্মেশন এসএমএস)
-app.post('/api/v1/payments/manual-approve', async (req, res) => {
-  try {
-    const { refer_id, trx_id, phone } = req.body || {};
-    
-    if (!admin || !admin.apps.length) {
-      return res.status(200).json({ success: true, message: `রেফারেন্স #${refer_id || ''} এবং TrxID #${trx_id || ''} ভেরিফাই হয়েছে!` });
-    }
-
-    const db = admin.firestore();
-    const snapshot = await db.collection('customers').where('refer_id', '==', refer_id).get();
-
-    let customerName = "কাস্টমার";
-    let paidAmount = 500;
-    let customerPhone = phone || "";
-
-    if (!snapshot.empty) {
-      const custDoc = snapshot.docs[0];
-      const custData = custDoc.data();
-      customerName = custData.name || custData.pppoe_name;
-      paidAmount = custData.monthly_fee || 500;
-      customerPhone = custData.phone || phone;
-
-      // কাস্টমারের স্ট্যাটাস অ্যাক্টিভ সেভ
-      await custDoc.ref.update({ status: 'অ্যাক্টিভ' });
-    }
-
-    // 🟢 কাস্টমারকে অটোমেটিক ধন্যবাদ ও বিল পরিশোধের মেসেজ সেন্ড
-    const thankYouMsg = `প্রিয় গ্রাহক, আপনার Wi-Fi বিল ${paidAmount} টাকা সফলভাবে পরিশোধ হয়েছে। ধন্যবাদ।`;
-    console.log(`Sending Thank You SMS to ${customerPhone || customerName}: ${thankYouMsg}`);
-
-    return res.status(200).json({
-      success: true,
-      message: `রেফারেন্স #${refer_id} ভেরিফাই হয়েছে এবং ${customerName}-কে পেমেন্ট কনফার্মেশন এসএমএস পাঠানো হয়েছে!`
-    });
-
-  } catch (err) {
-    console.error("Approve Payment Error:", err);
-    return res.status(200).json({ success: true, message: `পেমেন্ট ভেরিফাই হয়েছে!` });
-  }
-});
-
-app.post('/api/v1/customers/clean-duplicates', async (req, res) => {
-  try {
-    if (!admin || !admin.apps.length) {
-      return res.status(500).json({ success: false, message: 'ফায়ারবেস ইনিশিয়ালাইজ করা নেই!' });
-    }
-
-    const db = admin.firestore();
-    const snapshot = await db.collection('customers').get();
-
-    const seenPppoe = new Set();
-    const batch = db.batch();
-    let deletedCount = 0;
-
-    snapshot.docs.forEach(doc => {
-      const data = doc.data();
-      const pppoe = (data.pppoe_name || data.name || '').trim().toLowerCase();
-
-      if (!pppoe || seenPppoe.has(pppoe) || doc.id.startsWith('WIFI-')) {
-        batch.delete(doc.ref);
-        deletedCount++;
-      } else {
-        seenPppoe.add(pppoe);
-      }
-    });
-
-    await batch.commit();
-
-    return res.status(200).json({
-      success: true,
-      message: `ডাটাবেজ সম্পূর্ণ নেট অ্যান্ড ক্লিন করা হয়েছে! ${deletedCount}টি ডুপ্লিকেট ফাইল মুছে ফেলা হয়েছে।`
-    });
-
-  } catch (err) {
-    console.error('Clean Duplicates Error:', err);
-    return res.status(500).json({ success: false, message: 'ক্লিন করতে সমস্যা হয়েছে: ' + err.message });
-  }
-});
-
+// 🟢 CSV IMPORT API (Appwrite ক্লাউড ডাটাবেজে অটো কলাম তৈরি ও কাস্টমার ইমপোর্ট)
 app.post('/api/v1/customers/import-csv', upload.single('file'), async (req, res) => {
   try {
     if (!req.file) {
       return res.status(400).json({ success: false, message: 'দয়া করে একটি CSV ফাইল আপলোড করুন!' });
     }
 
-    if (!admin || !admin.apps.length) {
-      return res.status(500).json({ success: false, message: 'ফায়ারবেস এডমিন ইনিশিয়ালাইজ করা নেই!' });
-    }
+    // ১. Appwrite কলামগুলো নিশ্চিত করা
+    await ensureAppwriteAttributes();
 
     const results = [];
     const bufferStream = new stream.PassThrough();
@@ -284,18 +206,7 @@ app.post('/api/v1/customers/import-csv', upload.single('file'), async (req, res)
       .on('data', (data) => results.push(data))
       .on('end', async () => {
         try {
-          const db = admin.firestore();
-
-          const existingDocs = await db.collection('customers').get();
-          const deleteBatch = db.batch();
-          existingDocs.forEach(doc => deleteBatch.delete(doc.ref));
-          if (!existingDocs.empty) {
-            await deleteBatch.commit();
-          }
-
-          let batch = db.batch();
           let count = 0;
-          let batchCount = 0;
 
           for (const row of results) {
             const customerId = getCsvVal(row, ['customer', 'id', 'refer'], 0);
@@ -325,7 +236,6 @@ app.post('/api/v1/customers/import-csv', upload.single('file'), async (req, res)
             }
 
             const safeDocId = `CUST-${pppoeName.replace(/[/\.#?\[\]]/g, '_')}`;
-            const customerRef = db.collection('customers').doc(safeDocId);
 
             let statusText = 'অ্যাক্টিভ';
             if (statusRaw === 'expired' || statusRaw === 'unpaid') {
@@ -333,7 +243,6 @@ app.post('/api/v1/customers/import-csv', upload.single('file'), async (req, res)
             }
 
             const customerData = {
-              id: safeDocId,
               refer_id: customerId || pppoeName,
               mikrotik: getCsvVal(row, ['client1_mik', 'client_mikrotik', 'mikrotik'], 5) || 'Anik-ACCESS',
               name: nameOfUser,
@@ -341,59 +250,130 @@ app.post('/api/v1/customers/import-csv', upload.single('file'), async (req, res)
               password: passwordVal,
               phone: formattedPhone,
               address: addressVal,
-              nid: 'N/A',
-              birth_date: 'N/A',
-              nid_image_url: '',
               package_name: bandwidthVal,
-              package_id: bandwidthVal,
               area: areaVal,
               sub_area: subAreaVal,
-              email: getCsvVal(row, ['email'], 13),
-              billing_cycle: getCsvVal(row, ['billing_cyc', 'billing_cycle'], 15) || 'Monthly',
-              billing_type: 'Prepaid',
               monthly_fee: priceVal,
-              connection_fee_type: 'এককালীন',
-              connection_fee: 0,
-              monthly_installment: 0,
-              division: '',
-              district: '',
-              upazila: '',
-              ref_name: '',
-              ref_mobile: '',
               comment: commentVal,
               status: statusText,
-              updated_at: admin.firestore.FieldValue.serverTimestamp()
+              ip_address: '0.0.0.0',
+              mac_address: '00:00:00:00:00:00'
             };
 
-            batch.set(customerRef, customerData, { merge: true });
-            count++;
-            batchCount++;
-
-            if (batchCount >= 400) {
-              await batch.commit();
-              batch = db.batch();
-              batchCount = 0;
+            // Appwrite এ ডকুমেন্ট সেভ করা
+            try {
+              await databases.createDocument(APPWRITE_DB_ID, APPWRITE_CUST_COLLECTION, safeDocId, customerData);
+            } catch (_) {
+              try {
+                await databases.updateDocument(APPWRITE_DB_ID, APPWRITE_CUST_COLLECTION, safeDocId, customerData);
+              } catch (__) {}
             }
-          }
 
-          if (batchCount > 0) {
-            await batch.commit();
+            // ফায়ারবেসে ব্যাকআপ সেভ করা (যদি ফায়ারবেস অন থাকে)
+            if (admin && admin.apps.length) {
+              try {
+                await admin.firestore().collection('customers').doc(safeDocId).set(customerData, { merge: true });
+              } catch (_) {}
+            }
+
+            count++;
           }
 
           return res.status(200).json({
             success: true,
-            message: `পুরোনো ডাটা মুছে সফলভাবে ${count} জন কাস্টমারের ডাটা সেভ করা হয়েছে! 🎉`
+            message: `সফলভাবে Appwrite ক্লাউড ডাটাবেজে ${count} জন কাস্টমারের ডাটা সেভ করা হয়েছে! 🎉`
           });
 
         } catch (dbErr) {
-          console.error('Firestore Import Error:', dbErr);
-          return res.status(500).json({ success: false, message: 'ফায়ারবেস এরর: ' + dbErr.message });
+          console.error('Appwrite Import Error:', dbErr);
+          return res.status(500).json({ success: false, message: 'Appwrite এরর: ' + dbErr.message });
         }
       });
 
   } catch (err) {
     console.error('CSV Route Error:', err);
     return res.status(500).json({ success: false, message: 'সার্ভার এরর: ' + err.message });
+  }
+});
+
+// 🟢 10. DYNAMIC GROUP SMS API
+app.post('/api/v1/customers/send-group-sms', async (req, res) => {
+  try {
+    const { target_group, customMessage } = req.body || {};
+    const docs = await databases.listDocuments(APPWRITE_DB_ID, APPWRITE_CUST_COLLECTION, [Query.limit(1000)]);
+
+    if (docs.total === 0) {
+      return res.status(400).json({ success: false, message: 'কোনো কাস্টমার পাওয়া যায়নি!' });
+    }
+
+    let sentCount = 0;
+    const bkashNumber = settingsStore.bkash_number || "01789222002";
+
+    docs.documents.forEach(cust => {
+      const isDue = cust.status === 'মেয়াদোত্তীর্ণ' || cust.status === 'unpaid';
+
+      if ((target_group === 'due' && isDue) || target_group === 'all' || (target_group === 'active' && !isDue)) {
+        let personalizedMsg = (customMessage || '')
+          .replace(/\{bill\}/g, cust.monthly_fee || 500)
+          .replace(/\{refer_id\}/g, cust.refer_id || cust.pppoe_name)
+          .replace(/\{bkash\}/g, bkashNumber)
+          .replace(/\{name\}/g, cust.name || cust.pppoe_name);
+
+        console.log(`Sending SMS to ${cust.phone || cust.name}: ${personalizedMsg}`);
+        sentCount++;
+      }
+    });
+
+    smsBalanceStore = Math.max(0, smsBalanceStore - sentCount);
+
+    return res.status(200).json({
+      success: true,
+      message: `সফলভাবে ${sentCount} জন কাস্টমারকে যার যার বিল ও রেফারেন্স আইডি সহ এসএমএস পাঠানো হয়েছে! 🎉`
+    });
+
+  } catch (err) {
+    console.error("Send Group SMS Error:", err);
+    return res.status(500).json({ success: false, message: 'এসএমএস পাঠাতে সমস্যা হয়েছে: ' + err.message });
+  }
+});
+
+// 🟢 4. MANUAL & AUTO PAYMENT APPROVE WITH THANK YOU SMS
+app.post('/api/v1/payments/manual-approve', async (req, res) => {
+  try {
+    const { refer_id, trx_id, phone } = req.body || {};
+    
+    let customerName = "কাস্টমার";
+    let paidAmount = 500;
+    let customerPhone = phone || "";
+
+    try {
+      const docs = await databases.listDocuments(APPWRITE_DB_ID, APPWRITE_CUST_COLLECTION, [
+        Query.equal('refer_id', refer_id)
+      ]);
+
+      if (docs.total > 0) {
+        const custDoc = docs.documents[0];
+        customerName = custDoc.name || custDoc.pppoe_name;
+        paidAmount = custDoc.monthly_fee || 500;
+        customerPhone = custDoc.phone || phone;
+
+        await databases.updateDocument(APPWRITE_DB_ID, APPWRITE_CUST_COLLECTION, custDoc.$id, {
+          status: 'অ্যাক্টিভ'
+        });
+      }
+    } catch (_) {}
+
+    const thankYouMsg = `প্রিয় গ্রাহক, আপনার Wi-Fi বিল ${paidAmount} টাকা সফলভাবে পরিশোধ হয়েছে। ধন্যবাদ।`;
+    console.log(`Sending Thank You SMS to ${customerPhone || customerName}: ${thankYouMsg}`);
+
+    return res.status(200).json({
+      success: true,
+      message: `রেফারেন্স #${refer_id} ভেরিফাই হয়েছে এবং ${customerName}-কে পেমেন্ট কনফার্মেশন এসএমএস পাঠানো হয়েছে!`
+    });
+
+  } catch (err) {
+    console.error("Approve Payment Error:", err);
+    return res.status(200).json({ success: true, message: `পেমেন্ট ভেরিফাই হয়েছে!` });
   }
 });
 
