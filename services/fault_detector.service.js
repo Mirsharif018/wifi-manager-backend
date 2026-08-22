@@ -14,7 +14,7 @@ const APPWRITE_CUST_COLLECTION = 'customers';
 
 let activeFaultsList = [];
 
-// ⚡ ১. মাইক্রোটিক সরাসরি অনূ বন্ধ নোটিফিকেশন প্রসেসর (১০০% নিশ্চিত ইনস্ট্যান্ট পুশ সেন্ড)
+// ⚡ ১. মাইক্রোটিক সরাসরি অনূ বন্ধ নোটিফিকেশন প্রসেসর (সব ৩২৩ জন কাস্টমার স্ক্যান সহ)
 async function handleUserDisconnectedEvent(pppoeName) {
   try {
     if (!pppoeName) return;
@@ -22,15 +22,19 @@ async function handleUserDisconnectedEvent(pppoeName) {
     let custName = pppoeName;
     let referId = pppoeName;
 
-    // Appwrite ক্লাউড থেকে নিরাপদ কাস্টমার তথ্য খোঁজা
+    // Appwrite ক্লাউড থেকে সব ৩২৩ জন কাস্টমারের মধ্যে নিখুঁত তথ্য খোঁজা
     try {
       const docs = await databases.listDocuments(APPWRITE_DB_ID, APPWRITE_CUST_COLLECTION, [
-        Query.limit(100)
+        Query.limit(1000) // 🟢 ১০০০ পর্যন্ত লিমিট বাড়ানো হলো
       ]);
-      const matched = docs.documents.find(d => 
-        (d.pppoe_name || '').toLowerCase() === pppoeName.toLowerCase() ||
-        (d.name || '').toLowerCase() === pppoeName.toLowerCase()
-      );
+      
+      const searchTarget = pppoeName.trim().toLowerCase();
+      const matched = docs.documents.find(d => {
+        const pName = (d.pppoe_name || '').toString().trim().toLowerCase();
+        const uName = (d.name || '').toString().trim().toLowerCase();
+        return pName === searchTarget || uName === searchTarget;
+      });
+
       if (matched) {
         custName = matched.name || pppoeName;
         referId = matched.refer_id || pppoeName;
@@ -39,7 +43,7 @@ async function handleUserDisconnectedEvent(pppoeName) {
       console.log("Appwrite lookup fallback:", e.message);
     }
 
-    // 🟢 কোনো শর্ত ছাড়াই সরাসরি ইনস্ট্যান্ট পুশ নোটিফিকেশন সেন্ড
+    // 🟢 ইনস্ট্যান্ট পুশ নোটিফিকেশন সেন্ড
     await sendPushAlert(
       `🔌 কাস্টমার অনূ (ONU) বন্ধ`,
       `${custName} (REF: ${referId}) এর অনূ বন্ধ বা পাওয়ার নেই!`,
@@ -61,12 +65,16 @@ async function handleUserConnectedEvent(pppoeName) {
 
     try {
       const docs = await databases.listDocuments(APPWRITE_DB_ID, APPWRITE_CUST_COLLECTION, [
-        Query.limit(100)
+        Query.limit(1000)
       ]);
-      const matched = docs.documents.find(d => 
-        (d.pppoe_name || '').toLowerCase() === pppoeName.toLowerCase() ||
-        (d.name || '').toLowerCase() === pppoeName.toLowerCase()
-      );
+      
+      const searchTarget = pppoeName.trim().toLowerCase();
+      const matched = docs.documents.find(d => {
+        const pName = (d.pppoe_name || '').toString().trim().toLowerCase();
+        const uName = (d.name || '').toString().trim().toLowerCase();
+        return pName === searchTarget || uName === searchTarget;
+      });
+
       if (matched) {
         custName = matched.name || pppoeName;
         referId = matched.refer_id || pppoeName;
@@ -75,7 +83,6 @@ async function handleUserConnectedEvent(pppoeName) {
       console.log("Appwrite lookup fallback:", e.message);
     }
 
-    // 🟢 নিশ্চিত নোটিফিকেশন সেন্ড
     await sendPushAlert(
       `🟢 কাস্টমার অনলাইন অ্যালার্ট`,
       `${custName} (REF: ${referId}) এর অনূ চালু হয়েছে এবং অনলাইনে যুক্ত হয়েছেন!`,
