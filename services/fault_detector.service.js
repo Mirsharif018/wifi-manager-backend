@@ -2,6 +2,7 @@
 const admin = require('firebase-admin');
 const { Client, Databases, Query } = require('node-appwrite');
 
+// 🟢 Appwrite ক্লাউড কানেকশন
 const appwriteClient = new Client()
   .setEndpoint('https://sgp.cloud.appwrite.io/v1')
   .setProject('6a89602c00197fa35c90')
@@ -13,57 +14,74 @@ const APPWRITE_CUST_COLLECTION = 'customers';
 
 let activeFaultsList = [];
 
+// ⚡ ১. মাইক্রোটিক সরাসরি অনূ বন্ধ নোটিফিকেশন প্রসেসর (১০০% নিশ্চিত ইনস্ট্যান্ট পুশ সেন্ড)
 async function handleUserDisconnectedEvent(pppoeName) {
   try {
     if (!pppoeName) return;
     
-    let custData = { name: pppoeName, refer_id: pppoeName, area: 'Main Area', phone: '' };
+    let custName = pppoeName;
+    let referId = pppoeName;
 
+    // Appwrite ক্লাউড থেকে নিরাপদ কাস্টমার তথ্য খোঁজা
     try {
       const docs = await databases.listDocuments(APPWRITE_DB_ID, APPWRITE_CUST_COLLECTION, [
-        Query.equal('pppoe_name', pppoeName)
+        Query.limit(100)
       ]);
-      if (docs.total > 0) {
-        custData = docs.documents[0];
-      }
-    } catch (_) {}
-
-    const statusText = (custData.status || '').toString().trim();
-    if (statusText === 'অ্যাক্টিভ' || statusText === 'active') {
-      sendPushAlert(
-        `🔌 কাস্টমার অনূ (ONU) বন্ধ`,
-        `${custData.name || pppoeName} (REF: ${custData.refer_id || pppoeName}) এর অনূ বন্ধ বা পাওয়ার নেই!`,
-        { refer_id: custData.refer_id || pppoeName, pppoe_name: pppoeName, type: 'ONU_OFF' }
+      const matched = docs.documents.find(d => 
+        (d.pppoe_name || '').toLowerCase() === pppoeName.toLowerCase() ||
+        (d.name || '').toLowerCase() === pppoeName.toLowerCase()
       );
+      if (matched) {
+        custName = matched.name || pppoeName;
+        referId = matched.refer_id || pppoeName;
+      }
+    } catch (e) {
+      console.log("Appwrite lookup fallback:", e.message);
     }
+
+    // 🟢 কোনো শর্ত ছাড়াই সরাসরি ইনস্ট্যান্ট পুশ নোটিফিকেশন সেন্ড
+    await sendPushAlert(
+      `🔌 কাস্টমার অনূ (ONU) বন্ধ`,
+      `${custName} (REF: ${referId}) এর অনূ বন্ধ বা পাওয়ার নেই!`,
+      { refer_id: referId, pppoe_name: pppoeName, type: 'ONU_OFF' }
+    );
+
   } catch (err) {
     console.error("User Down Event Error:", err.message);
   }
 }
 
+// ⚡ ২. মাইক্রোটিক সরাসরি অনূ চালু নোটিফিকেশন প্রসেসর
 async function handleUserConnectedEvent(pppoeName) {
   try {
     if (!pppoeName) return;
 
-    let custData = { name: pppoeName, refer_id: pppoeName };
+    let custName = pppoeName;
+    let referId = pppoeName;
 
     try {
       const docs = await databases.listDocuments(APPWRITE_DB_ID, APPWRITE_CUST_COLLECTION, [
-        Query.equal('pppoe_name', pppoeName)
+        Query.limit(100)
       ]);
-      if (docs.total > 0) {
-        custData = docs.documents[0];
-      }
-    } catch (_) {}
-
-    const statusText = (custData.status || '').toString().trim();
-    if (statusText === 'অ্যাক্টিভ' || statusText === 'active') {
-      sendPushAlert(
-        `🟢 কাস্টমার অনলাইন অ্যালার্ট`,
-        `${custData.name || pppoeName} (REF: ${custData.refer_id || pppoeName}) এর অনূ চালু হয়েছে এবং অনলাইনে যুক্ত হয়েছেন!`,
-        { refer_id: custData.refer_id || pppoeName, pppoe_name: pppoeName, type: 'CUSTOMER_ONLINE' }
+      const matched = docs.documents.find(d => 
+        (d.pppoe_name || '').toLowerCase() === pppoeName.toLowerCase() ||
+        (d.name || '').toLowerCase() === pppoeName.toLowerCase()
       );
+      if (matched) {
+        custName = matched.name || pppoeName;
+        referId = matched.refer_id || pppoeName;
+      }
+    } catch (e) {
+      console.log("Appwrite lookup fallback:", e.message);
     }
+
+    // 🟢 নিশ্চিত নোটিফিকেশন সেন্ড
+    await sendPushAlert(
+      `🟢 কাস্টমার অনলাইন অ্যালার্ট`,
+      `${custName} (REF: ${referId}) এর অনূ চালু হয়েছে এবং অনলাইনে যুক্ত হয়েছেন!`,
+      { refer_id: referId, pppoe_name: pppoeName, type: 'CUSTOMER_ONLINE' }
+    );
+
   } catch (err) {
     console.error("User Up Event Error:", err.message);
   }
@@ -73,6 +91,7 @@ async function runNetworkDiagnostics() {
   return activeFaultsList;
 }
 
+// 🔔 ফায়ারবেস হাই-প্রাইওরিটি পুশ অ্যালার্ট সেন্ডার
 async function sendPushAlert(title, body, dataPayload = {}) {
   try {
     if (!admin || !admin.apps.length) return;
