@@ -14,18 +14,22 @@ const APPWRITE_CUST_COLLECTION = 'customers';
 
 let activeFaultsList = [];
 
-// ⚡ ১. মাইক্রোটিক সরাসরি অনূ বন্ধ নোটিফিকেশন প্রসেসর (সব ৩২৩ জন কাস্টমার স্ক্যান সহ)
+// 🟢 রিয়েল-টাইম ফাইবার ক্যাবল কাটা ধরার জন্য ৬০ সেকেন্ডের টাইম-উইন্ডো মেমোরি
+const recentDisconnectLogs = []; 
+const lastAreaFiberAlertTimeMap = new Map();
+
+// ⚡ ১. মাইক্রোটিক সরাসরি অনূ বন্ধ / ফাইবার কাটা প্রসেসর
 async function handleUserDisconnectedEvent(pppoeName) {
   try {
     if (!pppoeName) return;
     
     let custName = pppoeName;
     let referId = pppoeName;
+    let areaName = 'Main Area';
 
-    // Appwrite ক্লাউড থেকে সব ৩২৩ জন কাস্টমারের মধ্যে নিখুঁত তথ্য খোঁজা
     try {
       const docs = await databases.listDocuments(APPWRITE_DB_ID, APPWRITE_CUST_COLLECTION, [
-        Query.limit(1000) // 🟢 ১০০০ পর্যন্ত লিমিট বাড়ানো হলো
+        Query.limit(1000)
       ]);
       
       const searchTarget = pppoeName.trim().toLowerCase();
@@ -38,17 +42,46 @@ async function handleUserDisconnectedEvent(pppoeName) {
       if (matched) {
         custName = matched.name || pppoeName;
         referId = matched.refer_id || pppoeName;
+        areaName = matched.area || 'Main Area';
       }
     } catch (e) {
       console.log("Appwrite lookup fallback:", e.message);
     }
 
-    // 🟢 ইনস্ট্যান্ট পুশ নোটিফিকেশন সেন্ড
-    await sendPushAlert(
-      `🔌 কাস্টমার অনূ (ONU) বন্ধ`,
-      `${custName} (REF: ${referId}) এর অনূ বন্ধ বা পাওয়ার নেই!`,
-      { refer_id: referId, pppoe_name: pppoeName, type: 'ONU_OFF' }
-    );
+    const now = Date.now();
+    recentDisconnectLogs.push({ pppoe: pppoeName, area: areaName, time: now });
+
+    // ৬০ সেকেন্ডের আগের পুরোনো রেকর্ড সারভার মেমোরি থেকে ক্লিয়ার করা
+    const windowStartTime = now - 60 * 1000;
+    for (let i = recentDisconnectLogs.length - 1; i >= 0; i--) {
+      if (recentDisconnectLogs[i].time < windowStartTime) {
+        recentDisconnectLogs.splice(i, 1);
+      }
+    }
+
+    // ওই একই এরিয়ায় গত ৬০ সেকেন্ডে কতজন ডিসকানেক্ট হয়েছে তার হিসাব
+    const areaDisconnectCount = recentDisconnectLogs.filter(item => item.area === areaName).length;
+    const lastFiberAlertTime = lastAreaFiberAlertTimeMap.get(areaName) || 0;
+
+    // 🚨 যদি একই এলাকায় ৬০ সেকেন্ডের মধ্যে ৩ বা তার বেশি কাস্টমার অফলাইন হয় ➔ ফাইবার ক্যাবল কাটা
+    if (areaDisconnectCount >= 3) {
+      if (now - lastFiberAlertTime > 3 * 60 * 1000) { // ৩ মিনিট স্প্যাম ফিল্টার
+        lastAreaFiberAlertTimeMap.set(areaName, now);
+
+        sendPushAlert(
+          `🚨 ফাইবার তার কাটা পড়ার সংকেত (${areaName} এলাকা)`,
+          `${areaName} এলাকায় মূল ফাইবার তার কাটা পড়ার কারণে ${areaDisconnectCount} জন কাস্টমার একসাথে অফলাইন হয়েছেন!`,
+          { area: areaName, count: areaDisconnectCount.toString(), type: 'FIBER_CUT' }
+        );
+      }
+    } else {
+      // 🔌 কেবল ১-২ জন ডিসকানেক্ট হলে ➔ সাধারণ অনূ বন্ধ নোটিফিকেশন
+      sendPushAlert(
+        `🔌 কাস্টমার অনূ (ONU) বন্ধ`,
+        `${custName} (REF: ${referId}) এর অনূ বন্ধ বা পাওয়ার নেই!`,
+        { refer_id: referId, pppoe_name: pppoeName, type: 'ONU_OFF' }
+      );
+    }
 
   } catch (err) {
     console.error("User Down Event Error:", err.message);
