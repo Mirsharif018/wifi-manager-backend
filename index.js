@@ -1,14 +1,3 @@
-          for (let i = 0; i < results.length; i += CHUNK_SIZE) {
-            const chunk = results.slice(i, i + CHUNK_SIZE);
-            await Promise.all(chunk.map(async (row) => {
-              const customerId = getCsvVal(row, ['customer', 'id', 'refer'], 0);
-              const pppoeName = getCsvVal(row, ['pppoe', 'username'], 2) || getCsvVal(row, ['name_of', 'name'], 1);
-              if (!pppoeName) return;
-
-              const nameOfUser = getCsvVal(row, ['name_of', 'name'], 1) || pppoeName;
-              const addressVal = getCsvVal(row, ['address_of', 'address'], 3) || 'ঠিকানা দেওয়া নেই';
-              const bandwidthVal = getCsvVal(row, ['bandwidth', 'package'], 6) || 'মাসিক প্যাকেজ';
-              const passwordVal = getCsvVal(row, ['password'], 7) || '123456';
 const express = require('express');
 const cors = require('cors');
 const multer = require('multer');
@@ -117,8 +106,39 @@ function getCsvVal(row, possibleKeys, defaultIndex = -1) {
 app.get('/', (req, res) => {
   res.status(200).json({
     success: true,
-    message: "Wi-Fi Manager Owner App Backend API is Running Live!"
+    message: "Wi-Fi Manager Owner App Backend API (Appwrite Powered) is Running Live!"
   });
+});
+
+// 🌐 সরাসরি ব্রাউজার থেকে ফাইল আপলোড করার জন্য সুন্দর HTML পেজ
+app.get('/upload', (req, res) => {
+  res.send(`
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <meta name="viewport" content="width=device-width, initial-scale=1.0">
+      <title>Wi-Fi Manager CSV Upload</title>
+      <style>
+        body { font-family: Arial, sans-serif; background: #F4F7FE; padding: 20px; display: flex; justify-content: center; align-items: center; min-height: 80vh; margin: 0; }
+        .card { background: white; padding: 30px; border-radius: 16px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); width: 100%; max-width: 400px; text-align: center; }
+        h2 { color: #1E6FFF; margin-bottom: 20px; }
+        input[type="file"] { margin-bottom: 20px; width: 100%; font-size: 14px; }
+        button { background: #1E6FFF; color: white; border: none; padding: 14px 24px; border-radius: 10px; font-size: 16px; font-weight: bold; cursor: pointer; width: 100%; }
+        button:hover { background: #2563EB; }
+      </style>
+    </head>
+    <body>
+      <div class="card">
+        <h2>Wi-Fi Manager CSV Upload</h2>
+        <form action="/api/v1/customers/import-csv" method="POST" enctype="multipart/form-data">
+          <input type="file" name="file" accept=".csv" required />
+          <br/><br/>
+          <button type="submit">ফাইল আপলোড করুন 🚀</button>
+        </form>
+      </div>
+    </body>
+    </html>
+  `);
 });
 
 app.post('/api/v1/auth/sync', (req, res) => {
@@ -176,7 +196,7 @@ app.get('/api/v1/customers', async (req, res) => {
 
 app.use('/api/v1/diagnostics', diagnosticsRoutes);
 
-// ⚡ 3.1. INSTANT HIGH-SPEED CSV IMPORT API (মাত্র ১.৫ সেকেন্ডে ইমপোর্ট সম্পন্ন)
+// ⚡ 3.1. INSTANT HIGH-SPEED CSV IMPORT API
 app.post('/api/v1/customers/import-csv', upload.single('file'), async (req, res) => {
   try {
     if (!req.file) {
@@ -248,12 +268,10 @@ app.post('/api/v1/customers/import-csv', upload.single('file'), async (req, res)
               mac_address: '00:00:00:00:00:00'
             };
 
-            // ফায়ারবেসে সেভ
             if (batch) {
               batch.set(db.collection('customers').doc(safeDocId), customerData, { merge: true });
             }
 
-            // Appwrite এ দ্রুত সেভ
             databases.createDocument(APPWRITE_DB_ID, APPWRITE_CUST_COLLECTION, safeDocId, customerData).catch(() => {});
 
             count++;
@@ -315,7 +333,7 @@ app.post('/api/v1/customers/send-group-sms', async (req, res) => {
     });
 
   } catch (err) {
-    console.error("Send Group SMS Error:", err);
+    console.error("Send Group SMS Error:", err.message);
     return res.status(500).json({ success: false, message: 'এসএমএস পাঠাতে সমস্যা হয়েছে: ' + err.message });
   }
 });
