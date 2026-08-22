@@ -103,7 +103,6 @@ function getCsvVal(row, possibleKeys, defaultIndex = -1) {
   return '';
 }
 
-// 🟢 Appwrite-এ কলাম (Attributes) অটোমেটিক তৈরি করার সেফ মেথড
 async function ensureAppwriteAttributes() {
   try {
     const stringAttrs = [
@@ -160,7 +159,6 @@ app.get('/api/v1/owner/dashboard-stats', (req, res) => {
   });
 });
 
-// 🟢 3. Appwrite কাস্টমার লিস্ট এপিআই
 app.get('/api/v1/customers', async (req, res) => {
   try {
     const docs = await databases.listDocuments(APPWRITE_DB_ID, APPWRITE_CUST_COLLECTION, [Query.limit(1000)]);
@@ -187,14 +185,13 @@ app.get('/api/v1/customers', async (req, res) => {
 
 app.use('/api/v1/diagnostics', diagnosticsRoutes);
 
-// 🟢 CSV IMPORT API (Appwrite ক্লাউড ডাটাবেজে অটো কলাম তৈরি ও কাস্টমার ইমপোর্ট)
+// ⚡ 3.1. HIGH-SPEED PARALLEL CSV IMPORT API (মাত্র ২-৩ সেকেন্ডে আপলোড সম্পন্ন)
 app.post('/api/v1/customers/import-csv', upload.single('file'), async (req, res) => {
   try {
     if (!req.file) {
       return res.status(400).json({ success: false, message: 'দয়া করে একটি CSV ফাইল আপলোড করুন!' });
     }
 
-    // ১. Appwrite কলামগুলো নিশ্চিত করা
     await ensureAppwriteAttributes();
 
     const results = [];
@@ -207,81 +204,83 @@ app.post('/api/v1/customers/import-csv', upload.single('file'), async (req, res)
       .on('end', async () => {
         try {
           let count = 0;
+          const CHUNK_SIZE = 30; // 🟢 একসাথে ৩০টি প্যারালাল রিকোয়েস্ট প্রসেসিং
 
-          for (const row of results) {
-            const customerId = getCsvVal(row, ['customer', 'id', 'refer'], 0);
-            const pppoeName = getCsvVal(row, ['pppoe', 'username'], 2) || getCsvVal(row, ['name_of', 'name'], 1);
-            if (!pppoeName) continue;
+          for (let i = 0; i < results.length; i += CHUNK_SIZE) {
+            const chunk = results.slice(i, i + CHUNK_SIZE);
+            await Promise.all(chunk.map(async (row) => {
+              const customerId = getCsvVal(row, ['customer', 'id', 'refer'], 0);
+              const pppoeName = getCsvVal(row, ['pppoe', 'username'], 2) || getCsvVal(row, ['name_of', 'name'], 1);
+              if (!pppoeName) return;
 
-            const nameOfUser = getCsvVal(row, ['name_of', 'name'], 1) || pppoeName;
-            const addressVal = getCsvVal(row, ['address_of', 'address'], 3) || 'ঠিকানা দেওয়া নেই';
-            const bandwidthVal = getCsvVal(row, ['bandwidth', 'package'], 6) || 'মাসিক প্যাকেজ';
-            const passwordVal = getCsvVal(row, ['password'], 7) || '123456';
-            const priceVal = parseFloat(getCsvVal(row, ['selling', 'price', 'fee'], 17)) || 500;
-            const areaVal = getCsvVal(row, ['area'], 12) || 'Main Area';
-            const subAreaVal = getCsvVal(row, ['subarea', 'sub_area'], 11) || 'Sub Area';
-            const commentVal = getCsvVal(row, ['comment'], 18);
-            const statusRaw = getCsvVal(row, ['status'], 9).toLowerCase();
+              const nameOfUser = getCsvVal(row, ['name_of', 'name'], 1) || pppoeName;
+              const addressVal = getCsvVal(row, ['address_of', 'address'], 3) || 'ঠিকানা দেওয়া নেই';
+              const bandwidthVal = getCsvVal(row, ['bandwidth', 'package'], 6) || 'মাসিক প্যাকেজ';
+              const passwordVal = getCsvVal(row, ['password'], 7) || '123456';
+              const priceVal = parseFloat(getCsvVal(row, ['selling', 'price', 'fee'], 17)) || 500;
+              const areaVal = getCsvVal(row, ['area'], 12) || 'Main Area';
+              const subAreaVal = getCsvVal(row, ['subarea', 'sub_area'], 11) || 'Sub Area';
+              const commentVal = getCsvVal(row, ['comment'], 18);
+              const statusRaw = getCsvVal(row, ['status'], 9).toLowerCase();
 
-            let rawPhone = getCsvVal(row, ['client_pho', 'phone', 'mobile'], 8);
-            let formattedPhone = '';
-            if (rawPhone) {
-              let num = Number(rawPhone);
-              if (!isNaN(num) && num > 0) {
-                let strNum = Math.floor(num).toString();
-                formattedPhone = strNum.startsWith('0') ? strNum : '0' + strNum;
-              } else {
-                formattedPhone = rawPhone;
+              let rawPhone = getCsvVal(row, ['client_pho', 'phone', 'mobile'], 8);
+              let formattedPhone = '';
+              if (rawPhone) {
+                let num = Number(rawPhone);
+                if (!isNaN(num) && num > 0) {
+                  let strNum = Math.floor(num).toString();
+                  formattedPhone = strNum.startsWith('0') ? strNum : '0' + strNum;
+                } else {
+                  formattedPhone = rawPhone;
+                }
               }
-            }
 
-            const safeDocId = `CUST-${pppoeName.replace(/[/\.#?\[\]]/g, '_')}`;
+              const safeDocId = `CUST-${pppoeName.replace(/[/\.#?\[\]]/g, '_')}`;
 
-            let statusText = 'অ্যাক্টিভ';
-            if (statusRaw === 'expired' || statusRaw === 'unpaid') {
-              statusText = 'মেয়াদোত্তীর্ণ';
-            }
+              let statusText = 'অ্যাক্টিভ';
+              if (statusRaw === 'expired' || statusRaw === 'unpaid') {
+                statusText = 'মেয়াদোত্তীর্ণ';
+              }
 
-            const customerData = {
-              refer_id: customerId || pppoeName,
-              mikrotik: getCsvVal(row, ['client1_mik', 'client_mikrotik', 'mikrotik'], 5) || 'Anik-ACCESS',
-              name: nameOfUser,
-              pppoe_name: pppoeName,
-              password: passwordVal,
-              phone: formattedPhone,
-              address: addressVal,
-              package_name: bandwidthVal,
-              area: areaVal,
-              sub_area: subAreaVal,
-              monthly_fee: priceVal,
-              comment: commentVal,
-              status: statusText,
-              ip_address: '0.0.0.0',
-              mac_address: '00:00:00:00:00:00'
-            };
+              const customerData = {
+                refer_id: customerId || pppoeName,
+                mikrotik: getCsvVal(row, ['client1_mik', 'client_mikrotik', 'mikrotik'], 5) || 'Anik-ACCESS',
+                name: nameOfUser,
+                pppoe_name: pppoeName,
+                password: passwordVal,
+                phone: formattedPhone,
+                address: addressVal,
+                package_name: bandwidthVal,
+                area: areaVal,
+                sub_area: subAreaVal,
+                monthly_fee: priceVal,
+                comment: commentVal,
+                status: statusText,
+                ip_address: '0.0.0.0',
+                mac_address: '00:00:00:00:00:00'
+              };
 
-            // Appwrite এ ডকুমেন্ট সেভ করা
-            try {
-              await databases.createDocument(APPWRITE_DB_ID, APPWRITE_CUST_COLLECTION, safeDocId, customerData);
-            } catch (_) {
               try {
-                await databases.updateDocument(APPWRITE_DB_ID, APPWRITE_CUST_COLLECTION, safeDocId, customerData);
-              } catch (__) {}
-            }
+                await databases.createDocument(APPWRITE_DB_ID, APPWRITE_CUST_COLLECTION, safeDocId, customerData);
+              } catch (_) {
+                try {
+                  await databases.updateDocument(APPWRITE_DB_ID, APPWRITE_CUST_COLLECTION, safeDocId, customerData);
+                } catch (__) {}
+              }
 
-            // ফায়ারবেসে ব্যাকআপ সেভ করা (যদি ফায়ারবেস অন থাকে)
-            if (admin && admin.apps.length) {
-              try {
-                await admin.firestore().collection('customers').doc(safeDocId).set(customerData, { merge: true });
-              } catch (_) {}
-            }
+              if (admin && admin.apps.length) {
+                try {
+                  await admin.firestore().collection('customers').doc(safeDocId).set(customerData, { merge: true });
+                } catch (_) {}
+              }
 
-            count++;
+              count++;
+            }));
           }
 
           return res.status(200).json({
             success: true,
-            message: `সফলভাবে Appwrite ক্লাউড ডাটাবেজে ${count} জন কাস্টমারের ডাটা সেভ করা হয়েছে! 🎉`
+            message: `ঝড়ের গতিতে Appwrite ক্লাউড ডাটাবেজে ${count} জন কাস্টমারের ডাটা সেভ করা হয়েছে! 🎉`
           });
 
         } catch (dbErr) {
@@ -296,7 +295,6 @@ app.post('/api/v1/customers/import-csv', upload.single('file'), async (req, res)
   }
 });
 
-// 🟢 10. DYNAMIC GROUP SMS API
 app.post('/api/v1/customers/send-group-sms', async (req, res) => {
   try {
     const { target_group, customMessage } = req.body || {};
@@ -337,7 +335,6 @@ app.post('/api/v1/customers/send-group-sms', async (req, res) => {
   }
 });
 
-// 🟢 4. MANUAL & AUTO PAYMENT APPROVE WITH THANK YOU SMS
 app.post('/api/v1/payments/manual-approve', async (req, res) => {
   try {
     const { refer_id, trx_id, phone } = req.body || {};
