@@ -4,6 +4,7 @@ const net = require('net');
 const crypto = require('crypto');
 
 let activeFaultsList = [];
+const lastAlertTimeMap = new Map();
 
 // 🟢 মাইক্রোটিক রাউটার থেকে লাইভ অন-লাইন পিপিইওই কাস্টমার রিড করার ফাংশন
 function fetchMikrotikActiveUsers(host, port, username, password) {
@@ -15,7 +16,7 @@ function fetchMikrotikActiveUsers(host, port, username, password) {
     let onlineUsers = [];
     let state = 'LOGIN';
 
-    socket.setTimeout(6000);
+    socket.setTimeout(4000); // ৪ সেকেন্ডের কুইক টাইমআউট
 
     function encodeLength(len) {
       if (len < 0x80) return Buffer.from([len]);
@@ -81,7 +82,7 @@ async function runNetworkDiagnostics() {
     if (!admin || !admin.apps.length) return [];
     const db = admin.firestore();
 
-    // ১. ফায়ারবেস থেকে রাউটার ক্রেডেনশিয়াল লোড
+    // ১. ফায়ারবেস থেকে রাউটার কনফিগ লোড
     const settingsSnap = await db.collection('settings').doc('app_config').get();
     let routerIp = "", routerPort = "38728", routerUser = "", routerPass = "";
     if (settingsSnap.exists) {
@@ -106,22 +107,18 @@ async function runNetworkDiagnostics() {
     // ৩. রাউটার থেকে লাইভ অন-লাইন কাস্টমারদের ফেচ
     let liveOnlineUsers = await fetchMikrotikActiveUsers(routerIp, routerPort, routerUser, routerPass);
 
-    const currentOnlineSet = new Set();
-    if (liveOnlineUsers && Array.isArray(liveOnlineUsers)) {
-      liveOnlineUsers.forEach(u => currentOnlineSet.add(u));
-    } else {
-      allCustomersMap.forEach((cust, pppoe) => {
-        if ((cust.status === 'অ্যাক্টিভ' || cust.status === 'active') && cust.is_online !== false) {
-          currentOnlineSet.add(pppoe);
-        }
-      });
+    // 🚨 সেফটি ১: যদি রাউটার থেকে লাইভ সেশন না পাওয়া যায় (টাইমআউট/কানেকশন ফেল), স্ক্যান স্থগিত রাখা হবে (মনগড়া অনলাইন ধরা হবে না)
+    if (!liveOnlineUsers || !Array.isArray(liveOnlineUsers)) {
+      console.log("Router Live Connection Failed - Skipping cycle to prevent false alarms.");
+      return activeFaultsList;
     }
 
+    const currentOnlineSet = new Set(liveOnlineUsers);
     const totalCustomersCount = allCustomersMap.size;
     const totalOnlineCount = currentOnlineSet.size;
     const totalOfflineCount = Math.max(0, totalCustomersCount - totalOnlineCount);
 
-    // 🟢 ফায়ারবেস থেকে আগের স্ক্যানের স্থায়ী (Persistent) অনলাইন স্টেট লোড
+    // ৪. ফায়ারবেস থেকে আগের স্ক্যানের স্থায়ী (Persistent) অনলাইন স্টেট লোড
     const stateDocRef = db.collection('system').doc('network_state');
     const stateSnap = await stateDocRef.get();
 
@@ -130,7 +127,7 @@ async function runNetworkDiagnostics() {
       previousOnlineList = stateSnap.data().online_pppoe || [];
     }
 
-    // যদি প্রথম স্ক্যান হয়, তবে ফায়ারবেসে কারেন্ট অনলাইনের স্থায়ী তালিকা সেভ করা
+    // ১ম স্ক্যানে বেসলাইন সেট করা
     if (!stateSnap.exists) {
       await stateDocRef.set({
         online_pppoe: Array.from(currentOnlineSet),
@@ -143,7 +140,7 @@ async function runNetworkDiagnostics() {
 
     const previousOnlineSet = new Set(previousOnlineList);
 
-    // 🟢 ৪. নতুন অনলাইন হওয়া কাস্টমার বের করা (আগে অফলাইন ছিল, এখন রাউটারে লাইভ সচল!)
+    // 🟢 ৫. নতুন অনলাইন হওয়া কাস্টমার বের করা
     const newlyConnectedPppoe = [];
     const areaConnectedMap = {};
 
@@ -156,7 +153,7 @@ async function runNetworkDiagnostics() {
       }
     });
 
-    // 🔴 ৫. ডিসকানেক্ট হওয়া কাস্টমার বের করা (আগে অনলাইনে ছিল, এখন রাউটারে নেই!)
+    // 🔴 ৬. অফলাইন হওয়া কাস্টমার বের করা
     const newlyDisconnectedPppoe = [];
     const areaDisconnectedMap = {};
 
@@ -169,14 +166,16 @@ async function runNetworkDiagnostics() {
       }
     });
 
-    // 🟢 ফায়ারবেসে বর্তমান অনলাইনের তালিকা স্থায়ীভাবে সেভ (পরবর্তী স্ক্যানের জন্য)
+    // ফায়ারবেসে বর্তমান অনলাইনের স্থায়ী তালিকা সেভ
     await stateDocRef.set({
       online_pppoe: Array.from(currentOnlineSet),
       online_count: totalOnlineCount,
       updated_at: admin.firestore.FieldValue.serverTimestamp()
     }, { merge: true });
 
-    // 🔔 ৬. বিদ্যুৎ ফিরে আসার নোটিফিকেশন সেন্ড
+    const nowTime = Date.now();
+
+    // 🔔 ৭. বিদ্যুৎ ফিরে আসা নোটিফিকেশন
     if (newlyConnectedPppoe.length > 0) {
       Object.keys(areaConnectedMap).forEach(area => {
         const countInArea = areaConnectedMap[area];
@@ -190,7 +189,7 @@ async function runNetworkDiagnostics() {
       });
     }
 
-    // 🔔 ৭. লাইন অফলাইন / লোডশেডিং নোটিফিকেশন সেন্ড
+    // 🔔 ৮. বিদ্যুৎ চলে যাওয়া / লোডশেডিং নোটিফিকেশন
     if (newlyDisconnectedPppoe.length > 0) {
       const newFaults = [];
 
@@ -248,6 +247,7 @@ async function runNetworkDiagnostics() {
   }
 }
 
+// 🔔 অ্যান্ড্রয়েড হাই-প্রাইওরিটি পুশ অ্যালার্ট মেথড
 async function sendPushAlert(title, body, dataPayload = {}) {
   try {
     if (!admin || !admin.apps.length) return;
@@ -255,11 +255,19 @@ async function sendPushAlert(title, body, dataPayload = {}) {
     const message = {
       topic: 'owner_network_alerts',
       notification: { title, body },
+      android: {
+        priority: 'high',
+        notification: {
+          sound: 'default',
+          channelId: 'high_importance_channel',
+          priority: 'max'
+        }
+      },
       data: dataPayload
     };
 
     await admin.messaging().send(message);
-    console.log("FCM Push Alert Sent Successfully!");
+    console.log("High-Priority FCM Push Alert Sent Successfully!");
   } catch (err) {
     console.log("FCM Send Safe Catch:", err.message);
   }
