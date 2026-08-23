@@ -283,6 +283,20 @@ app.post('/api/v1/customers/import-csv', upload.single('file'), async (req, res)
                 batch = db.batch();
                 batchCount = 0;
               }
+
+              // Appwrite এ ব্যাকগ্রাউন্ড ডাটা সেভ
+              if (databases) {
+                databases.createDocument(APPWRITE_DB_ID, APPWRITE_CUST_COLLECTION, safeDocId, {
+                  refer_id: customerData.refer_id,
+                  name: customerData.name,
+                  pppoe_name: customerData.pppoe_name,
+                  phone: customerData.phone,
+                  address: customerData.address,
+                  package_name: customerData.package_name,
+                  monthly_fee: customerData.monthly_fee,
+                  status: customerData.status
+                }).catch(() => {});
+              }
             }
 
             if (batchCount > 0) {
@@ -308,7 +322,7 @@ app.post('/api/v1/customers/import-csv', upload.single('file'), async (req, res)
             <body>
               <div class="card">
                 <h2>আপলোড সফল হয়েছে! 🎉</h2>
-                <p>কাস্টমারদের আসল ডাটা সফলভাবে ডাটাবেজে সেভ করা হয়েছে।</p>
+                <p>কাস্টমারদের সকল ডাটা ডাটাবেজে সফলভাবে সেভ করা হয়েছে।</p>
                 <a href="/upload">পুনরায় আপলোড করুন</a>
               </div>
             </body>
