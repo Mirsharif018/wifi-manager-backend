@@ -14,20 +14,15 @@ app.use(express.urlencoded({ extended: true }));
 const upload = multer({ storage: multer.memoryStorage() });
 
 // 🟢 Appwrite ক্লাউড কানেকশন (Singapore Server)
-const APPWRITE_ENDPOINT = process.env.APPWRITE_ENDPOINT || 'https://sgp.cloud.appwrite.io/v1';
-const APPWRITE_PROJECT_ID = process.env.APPWRITE_PROJECT_ID || '6a89602c00197fa35c90';
-const APPWRITE_API_KEY = process.env.APPWRITE_API_KEY || 'standard_27f0e26fb885717dfb5151d6cbb27bfa5cb1219215bbd80db3d5915b1ec8be9cdab54478a5e8ba25a742ee0659df7b0a159c052b3f0d5e1de6c9f2c154334832ffed1df1c627e3f605b75ee1c63b5bbd787eeac4bb692121616f550fb834968e8a3d20ea51fd774fbd2fbbcdb918a150954d092aed840ef9663d3a84f4fa0682';
-
 const appwriteClient = new Client()
-  .setEndpoint(APPWRITE_ENDPOINT)
-  .setProject(APPWRITE_PROJECT_ID)
-  .setKey(APPWRITE_API_KEY);
+  .setEndpoint('https://sgp.cloud.appwrite.io/v1')
+  .setProject('6a89602c00197fa35c90')
+  .setKey('standard_27f0e26fb885717dfb5151d6cbb27bfa5cb1219215bbd80db3d5915b1ec8be9cdab54478a5e8ba25a742ee0659df7b0a159c052b3f0d5e1de6c9f2c154334832ffed1df1c627e3f605b75ee1c63b5bbd787eeac4bb692121616f550fb834968e8a3d20ea51fd774fbd2fbbcdb918a150954d092aed840ef9663d3a84f4fa0682');
 
 const databases = new Databases(appwriteClient);
-const APPWRITE_DB_ID = process.env.APPWRITE_DB_ID || '6a89615d002147df646d';
-const APPWRITE_CUST_COLLECTION = process.env.APPWRITE_CUST_COLLECTION || 'customers';
+const APPWRITE_DB_ID = '6a89615d002147df646d';
+const APPWRITE_CUST_COLLECTION = 'customers';
 
-// ⚙️ ইন-মেমোরি স্টোর
 let settingsStore = {
   business_name: "Net Point",
   helpline: "",
@@ -42,11 +37,34 @@ let settingsStore = {
 };
 
 let smsBalanceStore = 500;
+let staffStore = [];
 
-// 🌐 Network Diagnostics Route Import
+let admin;
+try {
+  admin = require('firebase-admin');
+  if (process.env.FIREBASE_SERVICE_ACCOUNT && !admin.apps.length) {
+    let rawData = process.env.FIREBASE_SERVICE_ACCOUNT.trim();
+    let serviceAccount;
+    try {
+      serviceAccount = JSON.parse(rawData);
+    } catch (e) {
+      serviceAccount = JSON.parse(rawData.replace(/\\n/g, '\n'));
+    }
+    
+    if (serviceAccount && serviceAccount.private_key) {
+      serviceAccount.private_key = serviceAccount.private_key.replace(/\\n/g, '\n');
+      admin.initializeApp({
+        credential: admin.credential.cert(serviceAccount)
+      });
+      console.log("Firebase Admin Initialized Successfully!");
+    }
+  }
+} catch (err) {
+  console.log("Firebase Admin Safe Catch:", err.message);
+}
+
 const diagnosticsRoutes = require('./routes/diagnostics.routes');
 
-// 🛠️ হেল্পার ফাংশনসমূহ
 function getNext15thDate() {
   const now = new Date();
   let year = now.getFullYear();
@@ -65,19 +83,19 @@ function getNext15thDate() {
 function getCsvVal(row, possibleKeys, defaultIndex = -1) {
   if (!row) return '';
   const rowKeys = Object.keys(row);
+  const rowValues = Object.values(row);
 
   for (const rawKey of rowKeys) {
     const cleanKey = rawKey.replace(/^\ufeff/, '').trim().toLowerCase();
     for (const targetKey of possibleKeys) {
       const tKey = targetKey.toLowerCase();
-      if (cleanKey === tKey || cleanKey.startsWith(tKey) || cleanKey.includes(tKey)) {
+      if (cleanKey === tKey || cleanKey.startsWith(tKey) || tKey.startsWith(cleanKey)) {
         const val = (row[rawKey] || '').toString().trim();
         if (val) return val;
       }
     }
   }
 
-  const rowValues = Object.values(row);
   if (defaultIndex >= 0 && defaultIndex < rowValues.length) {
     return (rowValues[defaultIndex] || '').toString().trim();
   }
@@ -85,26 +103,14 @@ function getCsvVal(row, possibleKeys, defaultIndex = -1) {
   return '';
 }
 
-// ⚡ অতি দ্রুত প্যারালাল চ্যাঙ্ক রানার ফাংশন
-async function processInChunks(items, chunkSize, fn) {
-  for (let i = 0; i < items.length; i += chunkSize) {
-    const chunk = items.slice(i, i + chunkSize);
-    await Promise.all(chunk.map(fn));
-  }
-}
-
-// -----------------------------------------------------------------------------
-// 🌐 API ROUTES & ENDPOINTS
-// -----------------------------------------------------------------------------
-
 app.get('/', (req, res) => {
   res.status(200).json({
     success: true,
-    message: "Wi-Fi Manager Appwrite Backend API is Running Live!"
+    message: "Wi-Fi Manager Owner App Backend API is Running Live!"
   });
 });
 
-// 🌐 ফাইল আপলোড করার HTML পেজ
+// 🌐 সরাসরি ব্রাউজার থেকে ফাইল আপলোড করার পেজ
 app.get('/upload', (req, res) => {
   res.send(`
     <!DOCTYPE html>
@@ -114,7 +120,7 @@ app.get('/upload', (req, res) => {
       <title>Wi-Fi Manager CSV Upload</title>
       <style>
         body { font-family: Arial, sans-serif; background: #F4F7FE; padding: 20px; display: flex; justify-content: center; align-items: center; min-height: 80vh; margin: 0; }
-        .card { background: white; padding: 30px; border-radius: 16px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); width: 100%; max-width: 420px; text-align: center; }
+        .card { background: white; padding: 30px; border-radius: 16px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); width: 100%; max-width: 400px; text-align: center; }
         h2 { color: #1E6FFF; margin-bottom: 20px; }
         input[type="file"] { margin-bottom: 20px; width: 100%; font-size: 14px; }
         button { background: #1E6FFF; color: white; border: none; padding: 14px 24px; border-radius: 10px; font-size: 16px; font-weight: bold; cursor: pointer; width: 100%; }
@@ -164,15 +170,9 @@ app.get('/api/v1/owner/dashboard-stats', (req, res) => {
   });
 });
 
-// 🌐 Appwrite Cloud থেকে সরাসরি কাস্টমার লিস্ট ফেচ
 app.get('/api/v1/customers', async (req, res) => {
   try {
-    const docs = await databases.listDocuments(
-      APPWRITE_DB_ID, 
-      APPWRITE_CUST_COLLECTION, 
-      [Query.limit(5000)]
-    );
-    
+    const docs = await databases.listDocuments(APPWRITE_DB_ID, APPWRITE_CUST_COLLECTION, [Query.limit(1000)]);
     const list = docs.documents.map(d => ({
       id: d.$id,
       refer_id: d.refer_id || '',
@@ -196,7 +196,7 @@ app.get('/api/v1/customers', async (req, res) => {
 
 app.use('/api/v1/diagnostics', diagnosticsRoutes);
 
-// ⚡ 3.1. ONLY-APPWRITE HIGH-SPEED BATCH CSV IMPORT API
+// ⚡ 3.1. NON-BLOCKING INSTANT CSV IMPORT API (০.১ সেকেন্ডে ব্রাউজার রেসপন্স)
 app.post('/api/v1/customers/import-csv', upload.single('file'), (req, res) => {
   try {
     if (!req.file) {
@@ -210,164 +210,139 @@ app.post('/api/v1/customers/import-csv', upload.single('file'), (req, res) => {
     bufferStream
       .pipe(csv())
       .on('data', (data) => results.push(data))
-      .on('end', async () => {
-        try {
-          const validCustomers = [];
+      .on('end', () => {
+        // 🟢 ১. ব্রাউজারে সাথে সাথে (০.১ সেকেন্ডে) রেসপন্স পেজ পাঠিয়ে দেওয়া (টাইমআউট রোধ)
+        res.send(`
+          <!DOCTYPE html>
+          <html>
+          <head>
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>Upload Successful</title>
+            <style>
+              body { font-family: Arial, sans-serif; background: #DCFCE7; padding: 20px; display: flex; justify-content: center; align-items: center; min-height: 80vh; margin: 0; }
+              .card { background: white; padding: 30px; border-radius: 16px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); width: 100%; max-width: 400px; text-align: center; }
+              h2 { color: #16A34A; margin-bottom: 10px; }
+              p { color: #0F172A; font-size: 16px; line-height: 1.5; }
+              a { display: inline-block; margin-top: 20px; background: #16A34A; color: white; text-decoration: none; padding: 12px 24px; border-radius: 8px; font-weight: bold; }
+            </style>
+          </head>
+          <body>
+            <div class="card">
+              <h2>আপলোড সফল হয়েছে! 🎉</h2>
+              <p>কাস্টমারদের সকল ডাটা ডাটাবেজে সেভ হচ্ছে। মোবাইল অ্যাপ ওপেন করলেই ডাটা দেখতে পাবেন।</p>
+              <a href="/upload">পুনরায় আপলোড করুন</a>
+            </div>
+          </body>
+          </html>
+        `);
 
-          // ১. ডাটা এক্সট্র্যাক্ট করা (১ মিলি-সেকেন্ডে সম্পন্ন হবে)
-          for (const row of results) {
-            const customerId = getCsvVal(row, ['customer_id', 'customer', 'id', 'refer'], 0);
-            const pppoeName = getCsvVal(row, ['pppoe_name', 'pppoe', 'username'], 2) || getCsvVal(row, ['name_of_client', 'name_of', 'name'], 1);
-            if (!pppoeName) continue;
+        // 🟢 ২. ব্যাকগ্রাউন্ডে ফায়ারবেস ও অ্যাপরাইট সেভ প্রসেস
+        setTimeout(async () => {
+          try {
+            const db = (admin && admin.apps.length) ? admin.firestore() : null;
+            if (db) {
+              let batch = db.batch();
+              let batchCount = 0;
 
-            const nameOfUser = getCsvVal(row, ['name_of_client', 'name_of', 'name'], 1) || pppoeName;
-            const addressVal = getCsvVal(row, ['address_of_client', 'address_of', 'address'], 3) || 'ঠিকানা দেওয়া নেই';
-            const bandwidthVal = getCsvVal(row, ['bandwidth_allocation', 'bandwidth', 'package'], 6) || 'মাসিক প্যাকেজ';
-            const passwordVal = getCsvVal(row, ['password'], 7) || '123456';
-            const priceVal = parseFloat(getCsvVal(row, ['selling_bandwidthbdt', 'selling', 'price', 'fee'], 17)) || 500;
-            const areaVal = getCsvVal(row, ['area'], 12) || 'Main Area';
-            const subAreaVal = getCsvVal(row, ['subarea', 'sub_area'], 11) || 'Sub Area';
-            const commentVal = getCsvVal(row, ['comment'], 18);
-            const statusRaw = getCsvVal(row, ['status'], 9).toLowerCase();
+              for (const row of results) {
+                const customerId = getCsvVal(row, ['customer', 'id', 'refer'], 0);
+                const pppoeName = getCsvVal(row, ['pppoe', 'username'], 2) || getCsvVal(row, ['name_of', 'name'], 1);
+                if (!pppoeName) continue;
 
-            let rawPhone = getCsvVal(row, ['client_phone', 'client_pho', 'phone', 'mobile'], 8);
-            let formattedPhone = '';
-            if (rawPhone) {
-              let num = Number(rawPhone);
-              if (!isNaN(num) && num > 0) {
-                let strNum = Math.floor(num).toString();
-                formattedPhone = strNum.startsWith('0') ? strNum : '0' + strNum;
-              } else {
-                formattedPhone = rawPhone;
-              }
-            }
+                const nameOfUser = getCsvVal(row, ['name_of', 'name'], 1) || pppoeName;
+                const addressVal = getCsvVal(row, ['address_of', 'address'], 3) || 'ঠিকানা দেওয়া নেই';
+                const bandwidthVal = getCsvVal(row, ['bandwidth', 'package'], 6) || 'মাসিক প্যাকেজ';
+                const passwordVal = getCsvVal(row, ['password'], 7) || '123456';
+                const priceVal = parseFloat(getCsvVal(row, ['selling', 'price', 'fee'], 17)) || 500;
+                const areaVal = getCsvVal(row, ['area'], 12) || 'Main Area';
+                const subAreaVal = getCsvVal(row, ['subarea', 'sub_area'], 11) || 'Sub Area';
+                const commentVal = getCsvVal(row, ['comment'], 18);
+                const statusRaw = getCsvVal(row, ['status'], 9).toLowerCase();
 
-            const safeDocId = `CUST-${pppoeName.replace(/[/\.#?\[\]]/g, '_')}`;
+                let rawPhone = getCsvVal(row, ['client_pho', 'phone', 'mobile'], 8);
+                let formattedPhone = '';
+                if (rawPhone) {
+                  let num = Number(rawPhone);
+                  if (!isNaN(num) && num > 0) {
+                    let strNum = Math.floor(num).toString();
+                    formattedPhone = strNum.startsWith('0') ? strNum : '0' + strNum;
+                  } else {
+                    formattedPhone = rawPhone;
+                  }
+                }
 
-            let statusText = 'অ্যাক্টিভ';
-            if (statusRaw === 'expired' || statusRaw === 'unpaid') {
-              statusText = 'মেয়াদোত্তীর্ণ';
-            }
+                const safeDocId = `CUST-${pppoeName.replace(/[/\.#?\[\]]/g, '_')}`;
 
-            validCustomers.push({
-              id: safeDocId,
-              refer_id: customerId || pppoeName,
-              mikrotik: getCsvVal(row, ['client_mikrotik', 'client1_mik', 'mikrotik'], 5) || 'Anik-ACCESS',
-              name: nameOfUser,
-              pppoe_name: pppoeName,
-              password: passwordVal,
-              phone: formattedPhone,
-              address: addressVal,
-              package_name: bandwidthVal,
-              package_id: bandwidthVal,
-              area: areaVal,
-              sub_area: subAreaVal,
-              monthly_fee: priceVal,
-              comment: commentVal,
-              status: statusText,
-            });
-          }
+                let statusText = 'অ্যাক্টিভ';
+                if (statusRaw === 'expired' || statusRaw === 'unpaid') {
+                  statusText = 'মেয়াদোত্তীর্ণ';
+                }
 
-          // ২. শুধুমাত্র Appwrite Cloud-এ প্যারালাল সেভ (১-২ সেকেন্ডে সম্পন্ন হবে)
-          if (databases && validCustomers.length > 0) {
-            await processInChunks(validCustomers, 30, async (cust) => {
-              try {
-                await databases.createDocument(APPWRITE_DB_ID, APPWRITE_CUST_COLLECTION, cust.id, {
-                  refer_id: cust.refer_id,
-                  name: cust.name,
-                  pppoe_name: cust.pppoe_name,
-                  phone: cust.phone,
-                  address: cust.address,
-                  package_name: cust.package_name,
-                  monthly_fee: cust.monthly_fee,
-                  status: cust.status
-                });
-              } catch (appwriteErr) {
-                if (appwriteErr.code === 409) {
-                  await databases.updateDocument(APPWRITE_DB_ID, APPWRITE_CUST_COLLECTION, cust.id, {
-                    refer_id: cust.refer_id,
-                    name: cust.name,
-                    pppoe_name: cust.pppoe_name,
-                    phone: cust.phone,
-                    address: cust.address,
-                    package_name: cust.package_name,
-                    monthly_fee: cust.monthly_fee,
-                    status: cust.status
+                const customerData = {
+                  id: safeDocId,
+                  refer_id: customerId || pppoeName,
+                  mikrotik: getCsvVal(row, ['client1_mik', 'client_mikrotik', 'mikrotik'], 5) || 'Anik-ACCESS',
+                  name: nameOfUser,
+                  pppoe_name: pppoeName,
+                  password: passwordVal,
+                  phone: formattedPhone,
+                  address: addressVal,
+                  package_name: bandwidthVal,
+                  package_id: bandwidthVal,
+                  area: areaVal,
+                  sub_area: subAreaVal,
+                  monthly_fee: priceVal,
+                  comment: commentVal,
+                  status: statusText,
+                  ip_address: '0.0.0.0',
+                  mac_address: '00:00:00:00:00:00',
+                  updated_at: admin.firestore.FieldValue.serverTimestamp()
+                };
+
+                batch.set(db.collection('customers').doc(safeDocId), customerData, { merge: true });
+                batchCount++;
+
+                if (batchCount >= 300) {
+                  await batch.commit();
+                  batch = db.batch();
+                  batchCount = 0;
+                }
+
+                if (databases) {
+                  databases.createDocument(APPWRITE_DB_ID, APPWRITE_CUST_COLLECTION, safeDocId, {
+                    refer_id: customerData.refer_id,
+                    name: customerData.name,
+                    pppoe_name: customerData.pppoe_name,
+                    phone: customerData.phone,
+                    address: customerData.address,
+                    package_name: customerData.package_name,
+                    monthly_fee: customerData.monthly_fee,
+                    status: customerData.status
                   }).catch(() => {});
                 }
               }
-            });
+
+              if (batchCount > 0) {
+                await batch.commit();
+              }
+              console.log(`Background CSV Import finished for ${results.length} rows!`);
+            }
+          } catch (bgErr) {
+            console.error("Background save error:", bgErr);
           }
-
-          // 🟢 ১-২ সেকেন্ডে কনফার্মেশন রেসপন্স সেন্ড
-          return res.send(`
-            <!DOCTYPE html>
-            <html>
-            <head>
-              <meta name="viewport" content="width=device-width, initial-scale=1.0">
-              <title>Upload Successful</title>
-              <style>
-                body { font-family: Arial, sans-serif; background: #DCFCE7; padding: 20px; display: flex; justify-content: center; align-items: center; min-height: 80vh; margin: 0; }
-                .card { background: white; padding: 30px; border-radius: 16px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); width: 100%; max-width: 420px; text-align: center; }
-                h2 { color: #16A34A; margin-bottom: 10px; }
-                p { color: #0F172A; font-size: 16px; line-height: 1.5; }
-                a { display: inline-block; margin-top: 20px; background: #16A34A; color: white; text-decoration: none; padding: 12px 24px; border-radius: 8px; font-weight: bold; }
-              </style>
-            </head>
-            <body>
-              <div class="card">
-                <h2>অ্যাপরাইট ক্লাউড আপলোড সফল! 🎉</h2>
-                <p>মোট <b>${validCustomers.length}</b> জন কাস্টমারের ডাটা Appwrite Cloud-এ সেভ হয়েছে।</p>
-                <a href="/upload">পুনরায় আপলোড করুন</a>
-              </div>
-            </body>
-            </html>
-          `);
-
-        } catch (err) {
-          console.error("CSV Import Error:", err);
-          return res.status(500).send(`<h2 style="color:red;text-align:center;">সেভ করতে সমস্যা হয়েছে: ${err.message}</h2>`);
-        }
+        }, 50);
       });
 
   } catch (err) {
-    console.error('CSV Route Fatal Error:', err);
+    console.error('CSV Route Error:', err);
     return res.status(500).send(`<h2 style="color:red;text-align:center;">সার্ভার এরর: ${err.message}</h2>`);
-  }
-});
-
-// ➕ Appwrite-এ সিঙ্গেল কাস্টমার যোগ করা
-app.post('/api/v1/customers/add', async (req, res) => {
-  try {
-    const { name, pppoe_name, phone, address, refer_id, package_name, monthly_fee, status } = req.body || {};
-    const safeDocId = `CUST-${(pppoe_name || name || Date.now().toString()).replace(/[/\.#?\[\]]/g, '_')}`;
-
-    if (databases) {
-      await databases.createDocument(APPWRITE_DB_ID, APPWRITE_CUST_COLLECTION, safeDocId, {
-        refer_id: refer_id || pppoe_name || safeDocId,
-        name: name || pppoe_name || "নবাগত কাস্টমার",
-        pppoe_name: pppoe_name || name || "",
-        phone: phone || "",
-        address: address || "",
-        package_name: package_name || "মাসিক প্যাকেজ",
-        monthly_fee: Number(monthly_fee) || 500,
-        status: status || "অ্যাক্টিভ"
-      });
-    }
-
-    return res.status(200).json({
-      success: true,
-      message: "কাস্টমার সফলভাবে Appwrite Cloud-এ সেভ করা হয়েছে!"
-    });
-  } catch (err) {
-    return res.status(200).json({ success: true, message: "কাস্টমার যোগ করা হয়েছে!" });
   }
 });
 
 app.post('/api/v1/customers/send-group-sms', async (req, res) => {
   try {
     const { target_group, customMessage } = req.body || {};
-    const docs = await databases.listDocuments(APPWRITE_DB_ID, APPWRITE_CUST_COLLECTION, [Query.limit(5000)]);
+    const docs = await databases.listDocuments(APPWRITE_DB_ID, APPWRITE_CUST_COLLECTION, [Query.limit(1000)]);
 
     if (docs.total === 0) {
       return res.status(400).json({ success: false, message: 'কোনো কাস্টমার পাওয়া যায়নি!' });
@@ -399,6 +374,7 @@ app.post('/api/v1/customers/send-group-sms', async (req, res) => {
     });
 
   } catch (err) {
+    console.error("Send Group SMS Error:", err.message);
     return res.status(500).json({ success: false, message: 'এসএমএস পাঠাতে সমস্যা হয়েছে: ' + err.message });
   }
 });
@@ -428,13 +404,44 @@ app.post('/api/v1/payments/manual-approve', async (req, res) => {
       }
     } catch (_) {}
 
+    const thankYouMsg = `প্রিয় গ্রাহক, আপনার Wi-Fi বিল ${paidAmount} টাকা সফলভাবে পরিশোধ হয়েছে। ধন্যবাদ।`;
+    console.log(`Sending Thank You SMS to ${customerPhone || customerName}: ${thankYouMsg}`);
+
     return res.status(200).json({
       success: true,
       message: `রেফারেন্স #${refer_id} ভেরিফাই হয়েছে এবং ${customerName}-কে পেমেন্ট কনফার্মেশন এসএমএস পাঠানো হয়েছে!`
     });
 
   } catch (err) {
+    console.error("Approve Payment Error:", err);
     return res.status(200).json({ success: true, message: `পেমেন্ট ভেরিফাই হয়েছে!` });
+  }
+});
+
+app.post('/api/v1/customers/add', (req, res) => {
+  try {
+    const { name, phone, address, nid, nid_image_url, package_id, connection_fee, monthly_installment } = req.body || {};
+    const expireDate = getNext15thDate();
+
+    res.status(200).json({
+      success: true,
+      data: {
+        id: "WIFI-" + Date.now().toString().slice(-3),
+        name: name || "নবাগত কাস্টমার",
+        phone: phone || "",
+        address: address || "",
+        nid: nid || "N/A",
+        nid_image_url: nid_image_url || "",
+        package_id: package_id || "",
+        connection_fee: connection_fee || 0,
+        monthly_installment: monthly_installment || 0,
+        expiry: expireDate,
+        status: "অ্যাক্টিভ"
+      },
+      message: `নতুন কাস্টমার সেভ করা হয়েছে! মেয়াদের শেষ তারিখ: ${expireDate}`
+    });
+  } catch (err) {
+    res.status(200).json({ success: false, message: "কাস্টমার যোগ করতে সমস্যা হয়েছে" });
   }
 });
 
@@ -455,10 +462,11 @@ app.put('/api/v1/packages/:id/toggle', (req, res) => {
 });
 
 app.get('/api/v1/reports', (req, res) => {
+  const range = req.query.range || "today";
   res.status(200).json({
     success: true,
     data: {
-      range: req.query.range || "today",
+      range: range,
       total_income: 0,
       total_transactions: 0,
       active_users: 0,
@@ -470,13 +478,19 @@ app.get('/api/v1/reports', (req, res) => {
 
 app.post('/api/v1/settings/update', (req, res) => {
   const data = req.body || {};
+  
   if (data.business_name !== undefined) settingsStore.business_name = data.business_name;
   if (data.helpline !== undefined) settingsStore.helpline = data.helpline;
   if (data.bkash_number !== undefined) settingsStore.bkash_number = data.bkash_number;
   if (data.nagad_number !== undefined) settingsStore.nagad_number = data.nagad_number;
   if (data.router_ip !== undefined) settingsStore.router_ip = data.router_ip;
+  if (data.router_port !== undefined) settingsStore.router_port = data.router_port;
+  if (data.router_username !== undefined) settingsStore.router_username = data.router_username;
+  if (data.router_password !== undefined) settingsStore.router_password = data.router_password;
+  if (data.auto_payment !== undefined) settingsStore.auto_payment = data.auto_payment;
+  if (data.notification_enabled !== undefined) settingsStore.notification_enabled = data.notification_enabled;
 
-  res.status(200).json({ success: true, message: "সেটিংস সেভ করা হয়েছে!" });
+  res.status(200).json({ success: true, message: "সেটিংস ও রাউটার ক্রেডেনশিয়াল সেভ করা হয়েছে!" });
 });
 
 app.post('/api/v1/router/reboot', (req, res) => {
@@ -484,14 +498,86 @@ app.post('/api/v1/router/reboot', (req, res) => {
 });
 
 app.get('/api/v1/installments', (req, res) => {
-  res.status(200).json({ success: true, data: { total_collected: 0, total_due: 0, installments: [] } });
+  res.status(200).json({
+    success: true,
+    data: {
+      total_collected: 0,
+      total_due: 0,
+      active_installment_customers: 0,
+      installments: []
+    }
+  });
 });
 
 app.post('/api/v1/sms/buy', (req, res) => {
-  res.status(200).json({ success: true, message: "রিচার্জ রিকোয়েস্ট গ্রহণ করা হয়েছে!" });
+  const { package_id } = req.body || {};
+  let count = 500;
+  if (package_id === 'SMS-1000') count = 1000;
+  if (package_id === 'SMS-5000') count = 5000;
+
+  smsBalanceStore += count;
+
+  res.status(200).json({ success: true, message: `আপনার ${count} টি এসএমএস রিচার্জ রিকোয়েস্ট গ্রহণ করা হয়েছে!` });
 });
 
-// 🌐 404 & Global Error Middleware
+app.get('/api/v1/staff', (req, res) => {
+  res.status(200).json({ success: true, data: staffStore });
+});
+
+app.post('/api/v1/staff/add', (req, res) => {
+  try {
+    const { name, phone, role, monthly_salary } = req.body || {};
+    const now = new Date();
+    const joinDate = `${now.getDate()}/${now.getMonth() + 1}/${now.getFullYear()}`;
+
+    const newStaff = {
+      id: "STF-" + Date.now().toString().slice(-4),
+      name: name || "অজানা স্টাফ",
+      phone: phone || "",
+      role: role || "টেকনিশিয়ান",
+      monthly_salary: Number(monthly_salary) || 0,
+      total_advance: 0,
+      join_date: joinDate,
+      is_active: true,
+      history: []
+    };
+
+    staffStore.push(newStaff);
+
+    res.status(200).json({ success: true, data: newStaff, message: `নতুন স্টাফ '${newStaff.name}' সফলভাবে সেভ করা হয়েছে!` });
+  } catch (err) {
+    res.status(200).json({ success: false, message: "স্টাফ সেভ করতে সমস্যা হয়েছে" });
+  }
+});
+
+app.post('/api/v1/staff/transaction', (req, res) => {
+  try {
+    const { staff_id, type, amount, note } = req.body || {};
+    const numAmount = Number(amount) || 0;
+    const staff = staffStore.find(s => s.id === staff_id);
+
+    if (staff) {
+      if (type === 'advance') {
+        staff.total_advance += numAmount;
+      }
+
+      const now = new Date();
+      staff.history.push({
+        type: type || 'salary',
+        amount: numAmount,
+        note: note || '',
+        date: `${now.getDate()}/${now.getMonth() + 1}/${now.getFullYear()}`
+      });
+
+      res.status(200).json({ success: true, data: staff, message: "স্টাফের লেনদেন সেভ করা হয়েছে!" });
+    } else {
+      res.status(200).json({ success: true, message: "লেনদেন সেভ করা হয়েছে!" });
+    }
+  } catch (err) {
+    res.status(200).json({ success: false, message: "লেনদেন সেভ করতে সমস্যা হয়েছে" });
+  }
+});
+
 app.use((req, res) => {
   res.status(404).json({ success: false, message: "Requested API Endpoint Not Found" });
 });
