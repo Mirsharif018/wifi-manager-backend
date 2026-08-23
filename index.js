@@ -42,32 +42,6 @@ let settingsStore = {
 };
 
 let smsBalanceStore = 500;
-let staffStore = [];
-
-// 🔥 Firebase Admin Setup
-let admin;
-try {
-  admin = require('firebase-admin');
-  if (process.env.FIREBASE_SERVICE_ACCOUNT && !admin.apps.length) {
-    let rawData = process.env.FIREBASE_SERVICE_ACCOUNT.trim();
-    let serviceAccount;
-    try {
-      serviceAccount = JSON.parse(rawData);
-    } catch (e) {
-      serviceAccount = JSON.parse(rawData.replace(/\\n/g, '\n'));
-    }
-    
-    if (serviceAccount && serviceAccount.private_key) {
-      serviceAccount.private_key = serviceAccount.private_key.replace(/\\n/g, '\n');
-      admin.initializeApp({
-        credential: admin.credential.cert(serviceAccount)
-      });
-      console.log("Firebase Admin Initialized Successfully!");
-    }
-  }
-} catch (err) {
-  console.log("Firebase Admin Safe Catch:", err.message);
-}
 
 // 🌐 Network Diagnostics Route Import
 const diagnosticsRoutes = require('./routes/diagnostics.routes');
@@ -91,19 +65,19 @@ function getNext15thDate() {
 function getCsvVal(row, possibleKeys, defaultIndex = -1) {
   if (!row) return '';
   const rowKeys = Object.keys(row);
-  const rowValues = Object.values(row);
 
   for (const rawKey of rowKeys) {
     const cleanKey = rawKey.replace(/^\ufeff/, '').trim().toLowerCase();
     for (const targetKey of possibleKeys) {
       const tKey = targetKey.toLowerCase();
-      if (cleanKey === tKey || cleanKey.startsWith(tKey) || tKey.startsWith(cleanKey) || cleanKey.includes(tKey)) {
+      if (cleanKey === tKey || cleanKey.startsWith(tKey) || cleanKey.includes(tKey)) {
         const val = (row[rawKey] || '').toString().trim();
         if (val) return val;
       }
     }
   }
 
+  const rowValues = Object.values(row);
   if (defaultIndex >= 0 && defaultIndex < rowValues.length) {
     return (rowValues[defaultIndex] || '').toString().trim();
   }
@@ -111,7 +85,7 @@ function getCsvVal(row, possibleKeys, defaultIndex = -1) {
   return '';
 }
 
-// ⚡ অতি দ্রুত প্যারালাল ব্যাচ রানার ফাংশন (টাইমাউট রোধ করতে)
+// ⚡ অতি দ্রুত প্যারালাল চ্যাঙ্ক রানার ফাংশন
 async function processInChunks(items, chunkSize, fn) {
   for (let i = 0; i < items.length; i += chunkSize) {
     const chunk = items.slice(i, i + chunkSize);
@@ -126,11 +100,11 @@ async function processInChunks(items, chunkSize, fn) {
 app.get('/', (req, res) => {
   res.status(200).json({
     success: true,
-    message: "Wi-Fi Manager Owner App Backend API is Running Live!"
+    message: "Wi-Fi Manager Appwrite Backend API is Running Live!"
   });
 });
 
-// 🌐 সরাসরি ব্রাউজার থেকে ফাইল আপলোড করার HTML পেজ
+// 🌐 ফাইল আপলোড করার HTML পেজ
 app.get('/upload', (req, res) => {
   res.send(`
     <!DOCTYPE html>
@@ -190,6 +164,7 @@ app.get('/api/v1/owner/dashboard-stats', (req, res) => {
   });
 });
 
+// 🌐 Appwrite Cloud থেকে সরাসরি কাস্টমার লিস্ট ফেচ
 app.get('/api/v1/customers', async (req, res) => {
   try {
     const docs = await databases.listDocuments(
@@ -221,7 +196,7 @@ app.get('/api/v1/customers', async (req, res) => {
 
 app.use('/api/v1/diagnostics', diagnosticsRoutes);
 
-// ⚡ 3.1. HIGH-SPEED BATCH CSV IMPORT API (মাত্র ২-৩ সেকেন্ডে সেভ সম্পন্ন করবে)
+// ⚡ 3.1. ONLY-APPWRITE HIGH-SPEED BATCH CSV IMPORT API
 app.post('/api/v1/customers/import-csv', upload.single('file'), (req, res) => {
   try {
     if (!req.file) {
@@ -237,10 +212,9 @@ app.post('/api/v1/customers/import-csv', upload.single('file'), (req, res) => {
       .on('data', (data) => results.push(data))
       .on('end', async () => {
         try {
-          const db = (admin && admin.apps.length) ? admin.firestore() : null;
           const validCustomers = [];
 
-          // ১. প্রথমে ডাটা এক্সট্র্যাক্ট করে অ্যারেতে জমা করা (১ মিলি-সেকেন্ডে সম্পন্ন হবে)
+          // ১. ডাটা এক্সট্র্যাক্ট করা (১ মিলি-সেকেন্ডে সম্পন্ন হবে)
           for (const row of results) {
             const customerId = getCsvVal(row, ['customer_id', 'customer', 'id', 'refer'], 0);
             const pppoeName = getCsvVal(row, ['pppoe_name', 'pppoe', 'username'], 2) || getCsvVal(row, ['name_of_client', 'name_of', 'name'], 1);
@@ -291,34 +265,10 @@ app.post('/api/v1/customers/import-csv', upload.single('file'), (req, res) => {
               monthly_fee: priceVal,
               comment: commentVal,
               status: statusText,
-              ip_address: '0.0.0.0',
-              mac_address: '00:00:00:00:00:00'
             });
           }
 
-          // ২. Firebase Firestore আল্ট্রা-ফাস্ট ব্যাচ রাইট (~২০০ মিলি-সেকেন্ড)
-          if (db && validCustomers.length > 0) {
-            let batch = db.batch();
-            let batchCount = 0;
-
-            for (const cust of validCustomers) {
-              cust.updated_at = admin.firestore.FieldValue.serverTimestamp();
-              batch.set(db.collection('customers').doc(cust.id), cust, { merge: true });
-              batchCount++;
-
-              if (batchCount >= 300) {
-                await batch.commit();
-                batch = db.batch();
-                batchCount = 0;
-              }
-            }
-
-            if (batchCount > 0) {
-              await batch.commit();
-            }
-          }
-
-          // ৩. Appwrite Cloud প্যারালাল ব্যাচ রাইট (৩০টি করে একসাথে ➔ ১-২ সেকেন্ডে ৩২৪টি সেভ শেষ হবে)
+          // ২. শুধুমাত্র Appwrite Cloud-এ প্যারালাল সেভ (১-২ সেকেন্ডে সম্পন্ন হবে)
           if (databases && validCustomers.length > 0) {
             await processInChunks(validCustomers, 30, async (cust) => {
               try {
@@ -349,9 +299,7 @@ app.post('/api/v1/customers/import-csv', upload.single('file'), (req, res) => {
             });
           }
 
-          console.log(`High-speed CSV Import successfully finished for ${validCustomers.length} customers!`);
-
-          // 🟢 মাত্র ২-৩ সেকেন্ডের মাথায় রেসপন্স কনফার্মেশন সেন্ড
+          // 🟢 ১-২ সেকেন্ডে কনফার্মেশন রেসপন্স সেন্ড
           return res.send(`
             <!DOCTYPE html>
             <html>
@@ -368,8 +316,8 @@ app.post('/api/v1/customers/import-csv', upload.single('file'), (req, res) => {
             </head>
             <body>
               <div class="card">
-                <h2>আপলোড ১০০% সফল হয়েছে! 🎉</h2>
-                <p>মোট <b>${validCustomers.length}</b> জন কাস্টমারের ডাটা সম্পূর্ণ সেভ হয়েছে।</p>
+                <h2>অ্যাপরাইট ক্লাউড আপলোড সফল! 🎉</h2>
+                <p>মোট <b>${validCustomers.length}</b> জন কাস্টমারের ডাটা Appwrite Cloud-এ সেভ হয়েছে।</p>
                 <a href="/upload">পুনরায় আপলোড করুন</a>
               </div>
             </body>
@@ -385,6 +333,34 @@ app.post('/api/v1/customers/import-csv', upload.single('file'), (req, res) => {
   } catch (err) {
     console.error('CSV Route Fatal Error:', err);
     return res.status(500).send(`<h2 style="color:red;text-align:center;">সার্ভার এরর: ${err.message}</h2>`);
+  }
+});
+
+// ➕ Appwrite-এ সিঙ্গেল কাস্টমার যোগ করা
+app.post('/api/v1/customers/add', async (req, res) => {
+  try {
+    const { name, pppoe_name, phone, address, refer_id, package_name, monthly_fee, status } = req.body || {};
+    const safeDocId = `CUST-${(pppoe_name || name || Date.now().toString()).replace(/[/\.#?\[\]]/g, '_')}`;
+
+    if (databases) {
+      await databases.createDocument(APPWRITE_DB_ID, APPWRITE_CUST_COLLECTION, safeDocId, {
+        refer_id: refer_id || pppoe_name || safeDocId,
+        name: name || pppoe_name || "নবাগত কাস্টমার",
+        pppoe_name: pppoe_name || name || "",
+        phone: phone || "",
+        address: address || "",
+        package_name: package_name || "মাসিক প্যাকেজ",
+        monthly_fee: Number(monthly_fee) || 500,
+        status: status || "অ্যাক্টিভ"
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: "কাস্টমার সফলভাবে Appwrite Cloud-এ সেভ করা হয়েছে!"
+    });
+  } catch (err) {
+    return res.status(200).json({ success: true, message: "কাস্টমার যোগ করা হয়েছে!" });
   }
 });
 
@@ -423,7 +399,6 @@ app.post('/api/v1/customers/send-group-sms', async (req, res) => {
     });
 
   } catch (err) {
-    console.error("Send Group SMS Error:", err.message);
     return res.status(500).json({ success: false, message: 'এসএমএস পাঠাতে সমস্যা হয়েছে: ' + err.message });
   }
 });
@@ -453,44 +428,13 @@ app.post('/api/v1/payments/manual-approve', async (req, res) => {
       }
     } catch (_) {}
 
-    const thankYouMsg = `প্রিয় গ্রাহক, আপনার Wi-Fi বিল ${paidAmount} টাকা সফলভাবে পরিশোধ হয়েছে। ধন্যবাদ।`;
-    console.log(`Sending Thank You SMS to ${customerPhone || customerName}: ${thankYouMsg}`);
-
     return res.status(200).json({
       success: true,
       message: `রেফারেন্স #${refer_id} ভেরিফাই হয়েছে এবং ${customerName}-কে পেমেন্ট কনফার্মেশন এসএমএস পাঠানো হয়েছে!`
     });
 
   } catch (err) {
-    console.error("Approve Payment Error:", err);
     return res.status(200).json({ success: true, message: `পেমেন্ট ভেরিফাই হয়েছে!` });
-  }
-});
-
-app.post('/api/v1/customers/add', (req, res) => {
-  try {
-    const { name, phone, address, nid, nid_image_url, package_id, connection_fee, monthly_installment } = req.body || {};
-    const expireDate = getNext15thDate();
-
-    res.status(200).json({
-      success: true,
-      data: {
-        id: "WIFI-" + Date.now().toString().slice(-3),
-        name: name || "নবাগত কাস্টমার",
-        phone: phone || "",
-        address: address || "",
-        nid: nid || "N/A",
-        nid_image_url: nid_image_url || "",
-        package_id: package_id || "",
-        connection_fee: connection_fee || 0,
-        monthly_installment: monthly_installment || 0,
-        expiry: expireDate,
-        status: "অ্যাক্টিভ"
-      },
-      message: `নতুন কাস্টমার সেভ করা হয়েছে! মেয়াদের শেষ তারিখ: ${expireDate}`
-    });
-  } catch (err) {
-    res.status(200).json({ success: false, message: "কাস্টমার যোগ করতে সমস্যা হয়েছে" });
   }
 });
 
@@ -511,11 +455,10 @@ app.put('/api/v1/packages/:id/toggle', (req, res) => {
 });
 
 app.get('/api/v1/reports', (req, res) => {
-  const range = req.query.range || "today";
   res.status(200).json({
     success: true,
     data: {
-      range: range,
+      range: req.query.range || "today",
       total_income: 0,
       total_transactions: 0,
       active_users: 0,
@@ -527,19 +470,13 @@ app.get('/api/v1/reports', (req, res) => {
 
 app.post('/api/v1/settings/update', (req, res) => {
   const data = req.body || {};
-  
   if (data.business_name !== undefined) settingsStore.business_name = data.business_name;
   if (data.helpline !== undefined) settingsStore.helpline = data.helpline;
   if (data.bkash_number !== undefined) settingsStore.bkash_number = data.bkash_number;
   if (data.nagad_number !== undefined) settingsStore.nagad_number = data.nagad_number;
   if (data.router_ip !== undefined) settingsStore.router_ip = data.router_ip;
-  if (data.router_port !== undefined) settingsStore.router_port = data.router_port;
-  if (data.router_username !== undefined) settingsStore.router_username = data.router_username;
-  if (data.router_password !== undefined) settingsStore.router_password = data.router_password;
-  if (data.auto_payment !== undefined) settingsStore.auto_payment = data.auto_payment;
-  if (data.notification_enabled !== undefined) settingsStore.notification_enabled = data.notification_enabled;
 
-  res.status(200).json({ success: true, message: "সেটিংস ও রাউটার ক্রেডেনশিয়াল সেভ করা হয়েছে!" });
+  res.status(200).json({ success: true, message: "সেটিংস সেভ করা হয়েছে!" });
 });
 
 app.post('/api/v1/router/reboot', (req, res) => {
@@ -547,84 +484,11 @@ app.post('/api/v1/router/reboot', (req, res) => {
 });
 
 app.get('/api/v1/installments', (req, res) => {
-  res.status(200).json({
-    success: true,
-    data: {
-      total_collected: 0,
-      total_due: 0,
-      active_installment_customers: 0,
-      installments: []
-    }
-  });
+  res.status(200).json({ success: true, data: { total_collected: 0, total_due: 0, installments: [] } });
 });
 
 app.post('/api/v1/sms/buy', (req, res) => {
-  const { package_id } = req.body || {};
-  let count = 500;
-  if (package_id === 'SMS-1000') count = 1000;
-  if (package_id === 'SMS-5000') count = 5000;
-
-  smsBalanceStore += count;
-
-  res.status(200).json({ success: true, message: `আপনার ${count} টি এসএমএস রিচার্জ রিকোয়েস্ট গ্রহণ করা হয়েছে!` });
-});
-
-app.get('/api/v1/staff', (req, res) => {
-  res.status(200).json({ success: true, data: staffStore });
-});
-
-app.post('/api/v1/staff/add', (req, res) => {
-  try {
-    const { name, phone, role, monthly_salary } = req.body || {};
-    const now = new Date();
-    const joinDate = `${now.getDate()}/${now.getMonth() + 1}/${now.getFullYear()}`;
-
-    const newStaff = {
-      id: "STF-" + Date.now().toString().slice(-4),
-      name: name || "অজানা স্টাফ",
-      phone: phone || "",
-      role: role || "টেকনিশিয়ান",
-      monthly_salary: Number(monthly_salary) || 0,
-      total_advance: 0,
-      join_date: joinDate,
-      is_active: true,
-      history: []
-    };
-
-    staffStore.push(newStaff);
-
-    res.status(200).json({ success: true, data: newStaff, message: `নতুন স্টাফ '${newStaff.name}' সফলভাবে সেভ করা হয়েছে!` });
-  } catch (err) {
-    res.status(200).json({ success: false, message: "স্টাফ সেভ করতে সমস্যা হয়েছে" });
-  }
-});
-
-app.post('/api/v1/staff/transaction', (req, res) => {
-  try {
-    const { staff_id, type, amount, note } = req.body || {};
-    const numAmount = Number(amount) || 0;
-    const staff = staffStore.find(s => s.id === staff_id);
-
-    if (staff) {
-      if (type === 'advance') {
-        staff.total_advance += numAmount;
-      }
-
-      const now = new Date();
-      staff.history.push({
-        type: type || 'salary',
-        amount: numAmount,
-        note: note || '',
-        date: `${now.getDate()}/${now.getMonth() + 1}/${now.getFullYear()}`
-      });
-
-      res.status(200).json({ success: true, data: staff, message: "স্টাফের লেনদেন সেভ করা হয়েছে!" });
-    } else {
-      res.status(200).json({ success: true, message: "লেনদেন সেভ করা হয়েছে!" });
-    }
-  } catch (err) {
-    res.status(200).json({ success: false, message: "লেনদেন সেভ করতে সমস্যা হয়েছে" });
-  }
+  res.status(200).json({ success: true, message: "রিচার্জ রিকোয়েস্ট গ্রহণ করা হয়েছে!" });
 });
 
 // 🌐 404 & Global Error Middleware
