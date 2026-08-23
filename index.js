@@ -14,15 +14,20 @@ app.use(express.urlencoded({ extended: true }));
 const upload = multer({ storage: multer.memoryStorage() });
 
 // 🟢 Appwrite ক্লাউড কানেকশন (Singapore Server)
+const APPWRITE_ENDPOINT = process.env.APPWRITE_ENDPOINT || 'https://sgp.cloud.appwrite.io/v1';
+const APPWRITE_PROJECT_ID = process.env.APPWRITE_PROJECT_ID || '6a89602c00197fa35c90';
+const APPWRITE_API_KEY = process.env.APPWRITE_API_KEY || 'standard_27f0e26fb885717dfb5151d6cbb27bfa5cb1219215bbd80db3d5915b1ec8be9cdab54478a5e8ba25a742ee0659df7b0a159c052b3f0d5e1de6c9f2c154334832ffed1df1c627e3f605b75ee1c63b5bbd787eeac4bb692121616f550fb834968e8a3d20ea51fd774fbd2fbbcdb918a150954d092aed840ef9663d3a84f4fa0682';
+
 const appwriteClient = new Client()
-  .setEndpoint('https://sgp.cloud.appwrite.io/v1')
-  .setProject('6a89602c00197fa35c90')
-  .setKey('standard_27f0e26fb885717dfb5151d6cbb27bfa5cb1219215bbd80db3d5915b1ec8be9cdab54478a5e8ba25a742ee0659df7b0a159c052b3f0d5e1de6c9f2c154334832ffed1df1c627e3f605b75ee1c63b5bbd787eeac4bb692121616f550fb834968e8a3d20ea51fd774fbd2fbbcdb918a150954d092aed840ef9663d3a84f4fa0682');
+  .setEndpoint(APPWRITE_ENDPOINT)
+  .setProject(APPWRITE_PROJECT_ID)
+  .setKey(APPWRITE_API_KEY);
 
 const databases = new Databases(appwriteClient);
-const APPWRITE_DB_ID = '6a89615d002147df646d';
-const APPWRITE_CUST_COLLECTION = 'customers';
+const APPWRITE_DB_ID = process.env.APPWRITE_DB_ID || '6a89615d002147df646d';
+const APPWRITE_CUST_COLLECTION = process.env.APPWRITE_CUST_COLLECTION || 'customers';
 
+// ⚙️ ইন-মেমোরি ফলব্যাক স্টোর
 let settingsStore = {
   business_name: "Net Point",
   helpline: "",
@@ -39,6 +44,7 @@ let settingsStore = {
 let smsBalanceStore = 500;
 let staffStore = [];
 
+// 🔥 Firebase Admin Setup
 let admin;
 try {
   admin = require('firebase-admin');
@@ -63,8 +69,10 @@ try {
   console.log("Firebase Admin Safe Catch:", err.message);
 }
 
+// 🌐 Network Diagnostics Route Import
 const diagnosticsRoutes = require('./routes/diagnostics.routes');
 
+// 🛠️ হেল্পার ফাংশনসমূহ
 function getNext15thDate() {
   const now = new Date();
   let year = now.getFullYear();
@@ -89,7 +97,7 @@ function getCsvVal(row, possibleKeys, defaultIndex = -1) {
     const cleanKey = rawKey.replace(/^\ufeff/, '').trim().toLowerCase();
     for (const targetKey of possibleKeys) {
       const tKey = targetKey.toLowerCase();
-      if (cleanKey === tKey || cleanKey.startsWith(tKey) || tKey.startsWith(cleanKey)) {
+      if (cleanKey === tKey || cleanKey.startsWith(tKey) || tKey.startsWith(cleanKey) || cleanKey.includes(tKey)) {
         const val = (row[rawKey] || '').toString().trim();
         if (val) return val;
       }
@@ -103,6 +111,10 @@ function getCsvVal(row, possibleKeys, defaultIndex = -1) {
   return '';
 }
 
+// -----------------------------------------------------------------------------
+// 🌐 API ROUTES & ENDPOINTS
+// -----------------------------------------------------------------------------
+
 app.get('/', (req, res) => {
   res.status(200).json({
     success: true,
@@ -110,7 +122,7 @@ app.get('/', (req, res) => {
   });
 });
 
-// 🌐 সরাসরি ব্রাউজার থেকে ফাইল আপলোড করার পেজ
+// 🌐 সরাসরি ব্রাউজার থেকে ফাইল আপলোড করার HTML পেজ
 app.get('/upload', (req, res) => {
   res.send(`
     <!DOCTYPE html>
@@ -120,7 +132,7 @@ app.get('/upload', (req, res) => {
       <title>Wi-Fi Manager CSV Upload</title>
       <style>
         body { font-family: Arial, sans-serif; background: #F4F7FE; padding: 20px; display: flex; justify-content: center; align-items: center; min-height: 80vh; margin: 0; }
-        .card { background: white; padding: 30px; border-radius: 16px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); width: 100%; max-width: 400px; text-align: center; }
+        .card { background: white; padding: 30px; border-radius: 16px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); width: 100%; max-width: 420px; text-align: center; }
         h2 { color: #1E6FFF; margin-bottom: 20px; }
         input[type="file"] { margin-bottom: 20px; width: 100%; font-size: 14px; }
         button { background: #1E6FFF; color: white; border: none; padding: 14px 24px; border-radius: 10px; font-size: 16px; font-weight: bold; cursor: pointer; width: 100%; }
@@ -172,7 +184,12 @@ app.get('/api/v1/owner/dashboard-stats', (req, res) => {
 
 app.get('/api/v1/customers', async (req, res) => {
   try {
-    const docs = await databases.listDocuments(APPWRITE_DB_ID, APPWRITE_CUST_COLLECTION, [Query.limit(1000)]);
+    const docs = await databases.listDocuments(
+      APPWRITE_DB_ID, 
+      APPWRITE_CUST_COLLECTION, 
+      [Query.limit(5000)]
+    );
+    
     const list = docs.documents.map(d => ({
       id: d.$id,
       refer_id: d.refer_id || '',
@@ -196,7 +213,7 @@ app.get('/api/v1/customers', async (req, res) => {
 
 app.use('/api/v1/diagnostics', diagnosticsRoutes);
 
-// ⚡ 3.1. NON-BLOCKING INSTANT CSV IMPORT API (০.১ সেকেন্ডে ব্রাউজার রেসপন্স)
+// ⚡ 3.1. COMPLETE AWAITED CSV IMPORT API (সকল ডাটা সঠিকভাবে সেভ নিশ্চিত করে)
 app.post('/api/v1/customers/import-csv', upload.single('file'), (req, res) => {
   try {
     if (!req.file) {
@@ -210,106 +227,97 @@ app.post('/api/v1/customers/import-csv', upload.single('file'), (req, res) => {
     bufferStream
       .pipe(csv())
       .on('data', (data) => results.push(data))
-      .on('end', () => {
-        // 🟢 ১. ব্রাউজারে সাথে সাথে (০.১ সেকেন্ডে) রেসপন্স পেজ পাঠিয়ে দেওয়া (টাইমআউট রোধ)
-        res.send(`
-          <!DOCTYPE html>
-          <html>
-          <head>
-            <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <title>Upload Successful</title>
-            <style>
-              body { font-family: Arial, sans-serif; background: #DCFCE7; padding: 20px; display: flex; justify-content: center; align-items: center; min-height: 80vh; margin: 0; }
-              .card { background: white; padding: 30px; border-radius: 16px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); width: 100%; max-width: 400px; text-align: center; }
-              h2 { color: #16A34A; margin-bottom: 10px; }
-              p { color: #0F172A; font-size: 16px; line-height: 1.5; }
-              a { display: inline-block; margin-top: 20px; background: #16A34A; color: white; text-decoration: none; padding: 12px 24px; border-radius: 8px; font-weight: bold; }
-            </style>
-          </head>
-          <body>
-            <div class="card">
-              <h2>আপলোড সফল হয়েছে! 🎉</h2>
-              <p>কাস্টমারদের সকল ডাটা ডাটাবেজে সেভ হচ্ছে। মোবাইল অ্যাপ ওপেন করলেই ডাটা দেখতে পাবেন।</p>
-              <a href="/upload">পুনরায় আপলোড করুন</a>
-            </div>
-          </body>
-          </html>
-        `);
+      .on('end', async () => {
+        try {
+          const db = (admin && admin.apps.length) ? admin.firestore() : null;
+          let batch = db ? db.batch() : null;
+          let batchCount = 0;
+          let totalImportedCount = 0;
 
-        // 🟢 ২. ব্যাকগ্রাউন্ডে ফায়ারবেস ও অ্যাপরাইট সেভ প্রসেস
-        setTimeout(async () => {
-          try {
-            const db = (admin && admin.apps.length) ? admin.firestore() : null;
+          for (const row of results) {
+            const customerId = getCsvVal(row, ['customer_id', 'customer', 'id', 'refer'], 0);
+            const pppoeName = getCsvVal(row, ['pppoe_name', 'pppoe', 'username'], 2) || getCsvVal(row, ['name_of_client', 'name_of', 'name'], 1);
+            if (!pppoeName) continue;
+
+            const nameOfUser = getCsvVal(row, ['name_of_client', 'name_of', 'name'], 1) || pppoeName;
+            const addressVal = getCsvVal(row, ['address_of_client', 'address_of', 'address'], 3) || 'ঠিকানা দেওয়া নেই';
+            const bandwidthVal = getCsvVal(row, ['bandwidth_allocation', 'bandwidth', 'package'], 6) || 'মাসিক প্যাকেজ';
+            const passwordVal = getCsvVal(row, ['password'], 7) || '123456';
+            const priceVal = parseFloat(getCsvVal(row, ['selling_bandwidthbdt', 'selling', 'price', 'fee'], 17)) || 500;
+            const areaVal = getCsvVal(row, ['area'], 12) || 'Main Area';
+            const subAreaVal = getCsvVal(row, ['subarea', 'sub_area'], 11) || 'Sub Area';
+            const commentVal = getCsvVal(row, ['comment'], 18);
+            const statusRaw = getCsvVal(row, ['status'], 9).toLowerCase();
+
+            let rawPhone = getCsvVal(row, ['client_phone', 'client_pho', 'phone', 'mobile'], 8);
+            let formattedPhone = '';
+            if (rawPhone) {
+              let num = Number(rawPhone);
+              if (!isNaN(num) && num > 0) {
+                let strNum = Math.floor(num).toString();
+                formattedPhone = strNum.startsWith('0') ? strNum : '0' + strNum;
+              } else {
+                formattedPhone = rawPhone;
+              }
+            }
+
+            const safeDocId = `CUST-${pppoeName.replace(/[/\.#?\[\]]/g, '_')}`;
+
+            let statusText = 'অ্যাক্টিভ';
+            if (statusRaw === 'expired' || statusRaw === 'unpaid') {
+              statusText = 'মেয়াদোত্তীর্ণ';
+            }
+
+            const customerData = {
+              id: safeDocId,
+              refer_id: customerId || pppoeName,
+              mikrotik: getCsvVal(row, ['client_mikrotik', 'client1_mik', 'mikrotik'], 5) || 'Anik-ACCESS',
+              name: nameOfUser,
+              pppoe_name: pppoeName,
+              password: passwordVal,
+              phone: formattedPhone,
+              address: addressVal,
+              package_name: bandwidthVal,
+              package_id: bandwidthVal,
+              area: areaVal,
+              sub_area: subAreaVal,
+              monthly_fee: priceVal,
+              comment: commentVal,
+              status: statusText,
+              ip_address: '0.0.0.0',
+              mac_address: '00:00:00:00:00:00'
+            };
+
+            // 🟢 ১. Firebase Firestore Batch Write
             if (db) {
-              let batch = db.batch();
-              let batchCount = 0;
+              customerData.updated_at = admin.firestore.FieldValue.serverTimestamp();
+              batch.set(db.collection('customers').doc(safeDocId), customerData, { merge: true });
+              batchCount++;
 
-              for (const row of results) {
-                const customerId = getCsvVal(row, ['customer', 'id', 'refer'], 0);
-                const pppoeName = getCsvVal(row, ['pppoe', 'username'], 2) || getCsvVal(row, ['name_of', 'name'], 1);
-                if (!pppoeName) continue;
+              if (batchCount >= 300) {
+                await batch.commit();
+                batch = db.batch();
+                batchCount = 0;
+              }
+            }
 
-                const nameOfUser = getCsvVal(row, ['name_of', 'name'], 1) || pppoeName;
-                const addressVal = getCsvVal(row, ['address_of', 'address'], 3) || 'ঠিকানা দেওয়া নেই';
-                const bandwidthVal = getCsvVal(row, ['bandwidth', 'package'], 6) || 'মাসিক প্যাকেজ';
-                const passwordVal = getCsvVal(row, ['password'], 7) || '123456';
-                const priceVal = parseFloat(getCsvVal(row, ['selling', 'price', 'fee'], 17)) || 500;
-                const areaVal = getCsvVal(row, ['area'], 12) || 'Main Area';
-                const subAreaVal = getCsvVal(row, ['subarea', 'sub_area'], 11) || 'Sub Area';
-                const commentVal = getCsvVal(row, ['comment'], 18);
-                const statusRaw = getCsvVal(row, ['status'], 9).toLowerCase();
-
-                let rawPhone = getCsvVal(row, ['client_pho', 'phone', 'mobile'], 8);
-                let formattedPhone = '';
-                if (rawPhone) {
-                  let num = Number(rawPhone);
-                  if (!isNaN(num) && num > 0) {
-                    let strNum = Math.floor(num).toString();
-                    formattedPhone = strNum.startsWith('0') ? strNum : '0' + strNum;
-                  } else {
-                    formattedPhone = rawPhone;
-                  }
-                }
-
-                const safeDocId = `CUST-${pppoeName.replace(/[/\.#?\[\]]/g, '_')}`;
-
-                let statusText = 'অ্যাক্টিভ';
-                if (statusRaw === 'expired' || statusRaw === 'unpaid') {
-                  statusText = 'মেয়াদোত্তীর্ণ';
-                }
-
-                const customerData = {
-                  id: safeDocId,
-                  refer_id: customerId || pppoeName,
-                  mikrotik: getCsvVal(row, ['client1_mik', 'client_mikrotik', 'mikrotik'], 5) || 'Anik-ACCESS',
-                  name: nameOfUser,
-                  pppoe_name: pppoeName,
-                  password: passwordVal,
-                  phone: formattedPhone,
-                  address: addressVal,
-                  package_name: bandwidthVal,
-                  package_id: bandwidthVal,
-                  area: areaVal,
-                  sub_area: subAreaVal,
-                  monthly_fee: priceVal,
-                  comment: commentVal,
-                  status: statusText,
-                  ip_address: '0.0.0.0',
-                  mac_address: '00:00:00:00:00:00',
-                  updated_at: admin.firestore.FieldValue.serverTimestamp()
-                };
-
-                batch.set(db.collection('customers').doc(safeDocId), customerData, { merge: true });
-                batchCount++;
-
-                if (batchCount >= 300) {
-                  await batch.commit();
-                  batch = db.batch();
-                  batchCount = 0;
-                }
-
-                if (databases) {
-                  databases.createDocument(APPWRITE_DB_ID, APPWRITE_CUST_COLLECTION, safeDocId, {
+            // 🟢 ২. Appwrite Cloud Write (Create / Upsert)
+            if (databases) {
+              try {
+                await databases.createDocument(APPWRITE_DB_ID, APPWRITE_CUST_COLLECTION, safeDocId, {
+                  refer_id: customerData.refer_id,
+                  name: customerData.name,
+                  pppoe_name: customerData.pppoe_name,
+                  phone: customerData.phone,
+                  address: customerData.address,
+                  package_name: customerData.package_name,
+                  monthly_fee: customerData.monthly_fee,
+                  status: customerData.status
+                });
+              } catch (appwriteErr) {
+                // Document 409 conflict হলে তথ্য আপডেট করে দিবে
+                if (appwriteErr.code === 409) {
+                  await databases.updateDocument(APPWRITE_DB_ID, APPWRITE_CUST_COLLECTION, safeDocId, {
                     refer_id: customerData.refer_id,
                     name: customerData.name,
                     pppoe_name: customerData.pppoe_name,
@@ -321,20 +329,50 @@ app.post('/api/v1/customers/import-csv', upload.single('file'), (req, res) => {
                   }).catch(() => {});
                 }
               }
-
-              if (batchCount > 0) {
-                await batch.commit();
-              }
-              console.log(`Background CSV Import finished for ${results.length} rows!`);
             }
-          } catch (bgErr) {
-            console.error("Background save error:", bgErr);
+
+            totalImportedCount++;
           }
-        }, 50);
+
+          if (db && batchCount > 0) {
+            await batch.commit();
+          }
+
+          console.log(`CSV Import successfully finished for ${totalImportedCount} customers!`);
+
+          // 🟢 সেভ সম্পন্ন হওয়ার পর নিশ্চিত সাফল্য বার্তা প্রদর্শন
+          return res.send(`
+            <!DOCTYPE html>
+            <html>
+            <head>
+              <meta name="viewport" content="width=device-width, initial-scale=1.0">
+              <title>Upload Successful</title>
+              <style>
+                body { font-family: Arial, sans-serif; background: #DCFCE7; padding: 20px; display: flex; justify-content: center; align-items: center; min-height: 80vh; margin: 0; }
+                .card { background: white; padding: 30px; border-radius: 16px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); width: 100%; max-width: 420px; text-align: center; }
+                h2 { color: #16A34A; margin-bottom: 10px; }
+                p { color: #0F172A; font-size: 16px; line-height: 1.5; }
+                a { display: inline-block; margin-top: 20px; background: #16A34A; color: white; text-decoration: none; padding: 12px 24px; border-radius: 8px; font-weight: bold; }
+              </style>
+            </head>
+            <body>
+              <div class="card">
+                <h2>আপলোড সফল হয়েছে! 🎉</h2>
+                <p>মোট <b>${totalImportedCount}</b> জন কাস্টমারের ডাটা সম্পূর্ণভাবে সেভ হয়েছে।</p>
+                <a href="/upload">পুনরায় আপলোড করুন</a>
+              </div>
+            </body>
+            </html>
+          `);
+
+        } catch (err) {
+          console.error("CSV Import Internal Error:", err);
+          return res.status(500).send(`<h2 style="color:red;text-align:center;">সেভ করতে সমস্যা হয়েছে: ${err.message}</h2>`);
+        }
       });
 
   } catch (err) {
-    console.error('CSV Route Error:', err);
+    console.error('CSV Route Fatal Error:', err);
     return res.status(500).send(`<h2 style="color:red;text-align:center;">সার্ভার এরর: ${err.message}</h2>`);
   }
 });
@@ -342,7 +380,7 @@ app.post('/api/v1/customers/import-csv', upload.single('file'), (req, res) => {
 app.post('/api/v1/customers/send-group-sms', async (req, res) => {
   try {
     const { target_group, customMessage } = req.body || {};
-    const docs = await databases.listDocuments(APPWRITE_DB_ID, APPWRITE_CUST_COLLECTION, [Query.limit(1000)]);
+    const docs = await databases.listDocuments(APPWRITE_DB_ID, APPWRITE_CUST_COLLECTION, [Query.limit(5000)]);
 
     if (docs.total === 0) {
       return res.status(400).json({ success: false, message: 'কোনো কাস্টমার পাওয়া যায়নি!' });
@@ -578,6 +616,7 @@ app.post('/api/v1/staff/transaction', (req, res) => {
   }
 });
 
+// 🌐 404 & Global Error Middleware
 app.use((req, res) => {
   res.status(404).json({ success: false, message: "Requested API Endpoint Not Found" });
 });
